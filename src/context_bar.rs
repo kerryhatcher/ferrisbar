@@ -9,7 +9,12 @@ pub fn compute_used(remaining_percentage: f64, total_tokens: f64, acw_env: f64) 
     let usable_remaining =
         ((remaining_percentage - buffer_pct) / (100.0 - buffer_pct) * 100.0).max(0.0);
     let used = (100.0 - usable_remaining).round();
-    used.clamp(0.0, 100.0) as u8
+    // Safe: clamp(0.0, 100.0) guarantees the value fits in u8 with no
+    // truncation or sign loss.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        used.clamp(0.0, 100.0) as u8
+    }
 }
 
 fn render_bar(used: u8) -> String {

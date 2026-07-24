@@ -11,10 +11,8 @@ fn resolve_settings_path(project_scope: bool) -> Result<PathBuf, String> {
         return Ok(cwd.join(".claude").join("settings.local.json"));
     }
 
-    let has_config_dir = env::var("CLAUDE_CONFIG_DIR")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    let has_home = env::var("HOME").map(|v| !v.is_empty()).unwrap_or(false);
+    let has_config_dir = env::var("CLAUDE_CONFIG_DIR").is_ok_and(|v| !v.is_empty());
+    let has_home = env::var("HOME").is_ok_and(|v| !v.is_empty());
     if !has_config_dir && !has_home {
         return Err(
             "Cannot resolve the Claude Code config directory: neither $CLAUDE_CONFIG_DIR nor $HOME is set."
@@ -48,7 +46,7 @@ fn apply_statusline_update(
         .get("statusLine")
         .and_then(|v| v.get("command"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(str::to_string);
 
     map.insert(
         "statusLine".to_string(),

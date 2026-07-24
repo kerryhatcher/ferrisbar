@@ -16,6 +16,11 @@ test:
 audit:
     cargo audit
 
+# Verify the crate still builds on its declared MSRV (Cargo.toml's
+# rust-version), catching drift from dependency bumps.
+msrv:
+    cargo msrv verify
+
 # Check licenses, banned crates, duplicate versions, and dependency sources
 # (see deny.toml).
 deny:
@@ -33,4 +38,4 @@ geiger:
     -cargo geiger
 
 # Run every check. Fails fast on the first failing recipe.
-ci: fmt lint test audit deny trivy geiger
+ci: fmt lint test audit msrv deny trivy geiger

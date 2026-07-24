@@ -34,10 +34,10 @@ fn main() {
         }
         _ => {
             let program = env::args().next().unwrap_or_default();
-            let program_name = Path::new(&program)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "ferrisbar".to_string());
+            let program_name = Path::new(&program).file_name().map_or_else(
+                || "ferrisbar".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             eprintln!("Usage: {program_name} [setup [--project]]");
             std::process::exit(1);
         }
@@ -74,8 +74,7 @@ fn main() {
 
     let dirname = Path::new(&cwd)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cwd.clone());
+        .map_or_else(|| cwd.clone(), |n| n.to_string_lossy().into_owned());
 
     let output = layout::compose_statusline(&model, &ctx, task.as_deref(), &dirname);
     print!("{output}");

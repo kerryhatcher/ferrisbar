@@ -2,8 +2,9 @@
 name = "ferrisbar"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85.1"
 description = "A Claude Code statusline renderer, written in Rust"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/kerryhatcher/ferrisbar"
 readme = "README.md"
 keywords = ["claude-code", "statusline", "cli"]
@@ -21,3 +22,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 [dev-dependencies]
 tempfile = "3"
 filetime = "0.2"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

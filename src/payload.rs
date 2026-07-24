@@ -83,6 +83,10 @@ impl Payload {
 }
 
 #[cfg(test)]
+// These tests assert against exact literal fallback constants and
+// JSON-literal pass-through values (not accumulated float arithmetic),
+// so exact equality is the correct check, not a fuzzy comparison.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
