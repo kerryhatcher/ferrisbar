@@ -33,7 +33,12 @@ fn main() {
             return;
         }
         _ => {
-            eprintln!("Usage: mystatusline [setup [--project]]");
+            let program = env::args().next().unwrap_or_default();
+            let program_name = Path::new(&program)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "ferrisbar".to_string());
+            eprintln!("Usage: {program_name} [setup [--project]]");
             std::process::exit(1);
         }
     }

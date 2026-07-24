@@ -1,10 +1,16 @@
 [package]
-name = "mystatusline"
+name = "ferrisbar"
 version = "0.1.0"
 edition = "2021"
+description = "A Claude Code statusline renderer, written in Rust"
+license = "MIT"
+repository = "https://github.com/kerryhatcher/ferrisbar"
+readme = "README.md"
+keywords = ["claude-code", "statusline", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
-name = "mystatusline"
+name = "ferrisbar"
 path = "src/main.rs"
 
 [dependencies]

@@ -4,13 +4,13 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn run_with_env(payload: &str, envs: &[(&str, &str)]) -> String {
-    let exe = env!("CARGO_BIN_EXE_mystatusline");
+    let exe = env!("CARGO_BIN_EXE_ferrisbar");
     let mut cmd = Command::new(exe);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().expect("failed to spawn mystatusline");
+    let mut child = cmd.spawn().expect("failed to spawn ferrisbar");
     child
         .stdin
         .take()
@@ -103,7 +103,7 @@ fn drains_large_stdin_payload() {
 }
 
 fn run_command(args: &[&str], envs: &[(&str, &str)], cwd: Option<&Path>) -> std::process::Output {
-    let exe = env!("CARGO_BIN_EXE_mystatusline");
+    let exe = env!("CARGO_BIN_EXE_ferrisbar");
     let mut cmd = Command::new(exe);
     cmd.args(args)
         .stdin(Stdio::piped())
@@ -115,7 +115,7 @@ fn run_command(args: &[&str], envs: &[(&str, &str)], cwd: Option<&Path>) -> std:
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let mut child = cmd.spawn().expect("failed to spawn mystatusline");
+    let mut child = cmd.spawn().expect("failed to spawn ferrisbar");
     drop(child.stdin.take());
     child.wait_with_output().expect("failed to wait on child")
 }
@@ -132,7 +132,7 @@ fn setup_writes_user_level_settings_file() {
     assert_eq!(value["statusLine"]["type"], "command");
     assert_eq!(
         value["statusLine"]["command"].as_str().unwrap(),
-        env!("CARGO_BIN_EXE_mystatusline")
+        env!("CARGO_BIN_EXE_ferrisbar")
     );
 }
 
@@ -150,7 +150,7 @@ fn setup_project_writes_local_settings_file() {
     let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
     assert_eq!(
         value["statusLine"]["command"].as_str().unwrap(),
-        env!("CARGO_BIN_EXE_mystatusline")
+        env!("CARGO_BIN_EXE_ferrisbar")
     );
 }
 
@@ -182,7 +182,7 @@ fn setup_honors_claude_config_dir_over_home() {
     let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
     assert_eq!(
         value["statusLine"]["command"].as_str().unwrap(),
-        env!("CARGO_BIN_EXE_mystatusline")
+        env!("CARGO_BIN_EXE_ferrisbar")
     );
 
     let bogus_home_settings_path = home.path().join(".claude").join("settings.json");
@@ -191,7 +191,7 @@ fn setup_honors_claude_config_dir_over_home() {
 
 #[test]
 fn setup_fails_loudly_when_config_dir_unresolvable() {
-    let exe = env!("CARGO_BIN_EXE_mystatusline");
+    let exe = env!("CARGO_BIN_EXE_ferrisbar");
     let mut cmd = Command::new(exe);
     cmd.args(["setup"])
         .stdin(Stdio::piped())
@@ -199,7 +199,7 @@ fn setup_fails_loudly_when_config_dir_unresolvable() {
         .stderr(Stdio::piped())
         .env_remove("HOME")
         .env_remove("CLAUDE_CONFIG_DIR");
-    let mut child = cmd.spawn().expect("failed to spawn mystatusline");
+    let mut child = cmd.spawn().expect("failed to spawn ferrisbar");
     drop(child.stdin.take());
     let output = child.wait_with_output().expect("failed to wait on child");
 
