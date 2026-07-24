@@ -21,6 +21,29 @@ fn resolve_todos_dir() -> PathBuf {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.as_slice() {
+        [] => {}
+        [cmd] if cmd == "setup" => {
+            if let Err(e) = setup::run(false) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        [cmd, flag] if cmd == "setup" && flag == "--project" => {
+            if let Err(e) = setup::run(true) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        _ => {
+            eprintln!("Usage: mystatusline [setup [--project]]");
+            std::process::exit(1);
+        }
+    }
+
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return;

@@ -26,20 +26,16 @@ model name and directory from the JSON payload. Claude Code sends a much
 richer payload at runtime (context window usage, session id, etc.) — see
 this repo's `docs/superpowers/specs/` for the full input/output contract.
 
-Set the `statusLine` command in `~/.claude/settings.json` (or a project-level
-`.claude/settings.json`) to the absolute path of the installed binary:
+Set the `statusLine` command automatically:
 
-```json
-"statusLine": {
-  "type": "command",
-  "command": "/home/kwhatcher/.cargo/bin/mystatusline"
-}
+```bash
+mystatusline setup
 ```
 
-The path above is machine-specific — this repo is public, and `cargo install`
-may place the binary somewhere other than `~/.cargo/bin` depending on your
-Cargo configuration. Confirm the actual location on your machine with
-`which mystatusline` and use that path in your own `statusLine` config.
+This updates `~/.claude/settings.json` (preserving every other setting) to
+point `statusLine.command` at this binary's installed location. Use
+`mystatusline setup --project` instead to write `.claude/settings.local.json`
+in the current project directory rather than your user-level settings.
 
 Claude Code reads the statusLine config once at session start, so start a new
 session after changing it.
