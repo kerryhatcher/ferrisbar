@@ -1,5 +1,6 @@
 mod payload;
 mod layout;
+mod context_bar;
 
 use std::io::Read;
 
