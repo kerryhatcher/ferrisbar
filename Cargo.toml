@@ -1,0 +1,8 @@
+[package]
+name = "mystatusline"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mystatusline"
+path = "src/main.rs"
