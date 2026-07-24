@@ -159,4 +159,16 @@ mod tests {
         write_todo_file(dir.path(), "abc-agent-1.json", "not json", 1000);
         assert_eq!(active_task("abc", dir.path()), None);
     }
+
+    #[test]
+    fn ignores_files_missing_json_suffix() {
+        let dir = tempdir().unwrap();
+        write_todo_file(
+            dir.path(),
+            "abc-agent-1.txt",
+            r#"[{"status":"in_progress","content":"x"}]"#,
+            1000,
+        );
+        assert_eq!(active_task("abc", dir.path()), None);
+    }
 }

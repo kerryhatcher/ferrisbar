@@ -100,4 +100,40 @@ mod tests {
         let out = render(Some(100.0), 1_000_000.0, 0.0);
         assert!(out.ends_with(RESET));
     }
+
+    #[test]
+    fn compute_used_49_is_green() {
+        assert_eq!(compute_used(59.085, 1_000_000.0, 0.0), 49);
+        let out = render(Some(59.085), 1_000_000.0, 0.0);
+        assert!(out.contains(GREEN));
+    }
+
+    #[test]
+    fn compute_used_64_is_yellow() {
+        assert_eq!(compute_used(46.56, 1_000_000.0, 0.0), 64);
+        let out = render(Some(46.56), 1_000_000.0, 0.0);
+        assert!(out.contains(YELLOW));
+    }
+
+    #[test]
+    fn compute_used_65_is_orange() {
+        assert_eq!(compute_used(45.725, 1_000_000.0, 0.0), 65);
+        let out = render(Some(45.725), 1_000_000.0, 0.0);
+        assert!(out.contains(ORANGE));
+    }
+
+    #[test]
+    fn compute_used_79_is_orange() {
+        assert_eq!(compute_used(34.035, 1_000_000.0, 0.0), 79);
+        let out = render(Some(34.035), 1_000_000.0, 0.0);
+        assert!(out.contains(ORANGE));
+    }
+
+    #[test]
+    fn compute_used_80_is_blink_red_with_skull() {
+        assert_eq!(compute_used(33.2, 1_000_000.0, 0.0), 80);
+        let out = render(Some(33.2), 1_000_000.0, 0.0);
+        assert!(out.contains(BLINK_RED));
+        assert!(out.contains('💀'));
+    }
 }

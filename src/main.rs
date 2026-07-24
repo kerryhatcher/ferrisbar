@@ -1,6 +1,6 @@
-mod payload;
-mod layout;
 mod context_bar;
+mod layout;
+mod payload;
 mod todo;
 
 use payload::Payload;
@@ -40,7 +40,11 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0);
-    let ctx = context_bar::render(payload.remaining_percentage(), payload.total_tokens(), acw_env);
+    let ctx = context_bar::render(
+        payload.remaining_percentage(),
+        payload.total_tokens(),
+        acw_env,
+    );
 
     let todos_dir = resolve_todos_dir();
     let task = todo::active_task(&session_id, &todos_dir);

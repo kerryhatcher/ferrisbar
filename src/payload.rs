@@ -76,8 +76,7 @@ mod tests {
 
     #[test]
     fn model_name_defaults_to_claude_when_empty_string() {
-        let payload: Payload =
-            serde_json::from_str(r#"{"model":{"display_name":""}}"#).unwrap();
+        let payload: Payload = serde_json::from_str(r#"{"model":{"display_name":""}}"#).unwrap();
         assert_eq!(payload.model_name(), "Claude");
     }
 
@@ -115,10 +114,8 @@ mod tests {
 
     #[test]
     fn remaining_percentage_present() {
-        let payload: Payload = serde_json::from_str(
-            r#"{"context_window":{"remaining_percentage":42.5}}"#,
-        )
-        .unwrap();
+        let payload: Payload =
+            serde_json::from_str(r#"{"context_window":{"remaining_percentage":42.5}}"#).unwrap();
         assert_eq!(payload.remaining_percentage(), Some(42.5));
     }
 
