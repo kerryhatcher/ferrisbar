@@ -18,10 +18,13 @@ After running `cargo install --path .`, verify the binary works before wiring
 it up:
 
 ```bash
-echo '{}' | mystatusline
+echo '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"}}' | mystatusline
 ```
 
-This should print `Hello World`.
+This should print a statusline like `Claude │ tmp` (dimmed), reflecting the
+model name and directory from the JSON payload. Claude Code sends a much
+richer payload at runtime (context window usage, session id, etc.) — see
+this repo's `docs/superpowers/specs/` for the full input/output contract.
 
 Set the `statusLine` command in `~/.claude/settings.json` (or a project-level
 `.claude/settings.json`) to the absolute path of the installed binary:
