@@ -1,30 +1,48 @@
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+
+/// Deserializes a field as `None` instead of failing the whole document when
+/// its value is present but has an unexpected JSON type (e.g. a number where
+/// a string was expected). Missing keys and explicit `null` are still `None`
+/// via serde's own `Option`/`#[serde(default)]` handling before this runs.
+fn lenient_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
 
 #[derive(Deserialize, Default)]
 pub struct Payload {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option")]
     pub model: Option<Model>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option")]
     pub workspace: Option<Workspace>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option")]
     pub session_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_option")]
     pub context_window: Option<ContextWindow>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct Model {
+    #[serde(default, deserialize_with = "lenient_option")]
     pub display_name: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct Workspace {
+    #[serde(default, deserialize_with = "lenient_option")]
     pub current_dir: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct ContextWindow {
+    #[serde(default, deserialize_with = "lenient_option")]
     pub remaining_percentage: Option<f64>,
+    #[serde(default, deserialize_with = "lenient_option")]
     pub total_tokens: Option<f64>,
 }
 
@@ -137,5 +155,46 @@ mod tests {
         let payload: Payload =
             serde_json::from_str(r#"{"context_window":{"total_tokens":0}}"#).unwrap();
         assert_eq!(payload.total_tokens(), 1_000_000.0);
+    }
+
+    #[test]
+    fn other_top_level_fields_survive_when_session_id_has_wrong_type() {
+        let payload: Payload = serde_json::from_str(
+            r#"{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/tmp/foo"},"session_id":123}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.model_name(), "Sonnet");
+        assert_eq!(payload.cwd("/fallback"), "/tmp/foo");
+        assert_eq!(payload.session_id(), "");
+    }
+
+    #[test]
+    fn other_top_level_fields_survive_when_context_window_has_wrong_type() {
+        let payload: Payload = serde_json::from_str(
+            r#"{"model":{"display_name":"Sonnet"},"context_window":"not an object"}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.model_name(), "Sonnet");
+        assert_eq!(payload.remaining_percentage(), None);
+    }
+
+    #[test]
+    fn total_tokens_wrong_type_falls_back_but_remaining_percentage_still_parses() {
+        let payload: Payload = serde_json::from_str(
+            r#"{"context_window":{"remaining_percentage":42.5,"total_tokens":"oops"}}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.remaining_percentage(), Some(42.5));
+        assert_eq!(payload.total_tokens(), 1_000_000.0);
+    }
+
+    #[test]
+    fn display_name_wrong_type_falls_back_but_workspace_still_parses() {
+        let payload: Payload = serde_json::from_str(
+            r#"{"model":{"display_name":123},"workspace":{"current_dir":"/tmp/foo"}}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.model_name(), "Claude");
+        assert_eq!(payload.cwd("/fallback"), "/tmp/foo");
     }
 }
