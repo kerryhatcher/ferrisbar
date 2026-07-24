@@ -1,0 +1,44 @@
+# cargo-deny configuration. Run `cargo deny check` (or `just deny`).
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# `cargo deny check advisories` — RustSec vulnerability/yanked-crate database.
+[advisories]
+ignore = []
+
+# `cargo deny check licenses` — only these licenses are allowed anywhere in
+# the dependency tree. Matches every license actually present today (MIT,
+# Apache-2.0, and Unicode-3.0 via unicode-ident's dual+Unicode-3.0 expression).
+[licenses]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+# `cargo deny check bans` — duplicate/banned/wildcard-version crates.
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow-workspace = false
+
+# `cargo deny check sources` — only allow crates.io; reject any dependency
+# pulled from an unrecognized registry or git repository.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
