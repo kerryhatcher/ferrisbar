@@ -1,21 +1,33 @@
+use crate::config_dir;
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn resolve_settings_path(project_scope: bool) -> PathBuf {
+fn resolve_settings_path(project_scope: bool) -> Result<PathBuf, String> {
     if project_scope {
-        env::current_dir()
-            .unwrap_or_default()
-            .join(".claude")
-            .join("settings.local.json")
-    } else {
-        let home = env::var("HOME").unwrap_or_default();
-        PathBuf::from(home).join(".claude").join("settings.json")
+        let cwd = env::current_dir()
+            .map_err(|e| format!("failed to determine the current directory: {e}"))?;
+        return Ok(cwd.join(".claude").join("settings.local.json"));
     }
+
+    let has_config_dir = env::var("CLAUDE_CONFIG_DIR")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let has_home = env::var("HOME").map(|v| !v.is_empty()).unwrap_or(false);
+    if !has_config_dir && !has_home {
+        return Err(
+            "Cannot resolve the Claude Code config directory: neither $CLAUDE_CONFIG_DIR nor $HOME is set."
+                .to_string(),
+        );
+    }
+    Ok(config_dir::claude_config_dir().join("settings.json"))
 }
 
-fn apply_statusline_update(settings_path: &Path, new_command: &str) -> Result<Option<String>, String> {
+fn apply_statusline_update(
+    settings_path: &Path,
+    new_command: &str,
+) -> Result<Option<String>, String> {
     let existing = match fs::read_to_string(settings_path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
@@ -57,7 +69,7 @@ fn apply_statusline_update(settings_path: &Path, new_command: &str) -> Result<Op
 }
 
 pub fn run(project_scope: bool) -> Result<(), String> {
-    let settings_path = resolve_settings_path(project_scope);
+    let settings_path = resolve_settings_path(project_scope)?;
     let new_command = env::current_exe()
         .map_err(|e| format!("failed to resolve the current executable path: {e}"))?
         .to_string_lossy()

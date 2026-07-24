@@ -161,3 +161,48 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
     assert!(!output.status.success());
     assert!(!output.stderr.is_empty());
 }
+
+#[test]
+fn setup_honors_claude_config_dir_over_home() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let output = run_command(
+        &["setup"],
+        &[
+            ("CLAUDE_CONFIG_DIR", config_dir.path().to_str().unwrap()),
+            ("HOME", home.path().to_str().unwrap()),
+        ],
+        None,
+    );
+
+    assert!(output.status.success());
+
+    let settings_path = config_dir.path().join("settings.json");
+    let contents = fs::read_to_string(&settings_path).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
+    assert_eq!(
+        value["statusLine"]["command"].as_str().unwrap(),
+        env!("CARGO_BIN_EXE_mystatusline")
+    );
+
+    let bogus_home_settings_path = home.path().join(".claude").join("settings.json");
+    assert!(!bogus_home_settings_path.exists());
+}
+
+#[test]
+fn setup_fails_loudly_when_config_dir_unresolvable() {
+    let exe = env!("CARGO_BIN_EXE_mystatusline");
+    let mut cmd = Command::new(exe);
+    cmd.args(["setup"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("HOME")
+        .env_remove("CLAUDE_CONFIG_DIR");
+    let mut child = cmd.spawn().expect("failed to spawn mystatusline");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("failed to wait on child");
+
+    assert!(!output.status.success());
+    assert!(!output.stderr.is_empty());
+}

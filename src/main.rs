@@ -1,3 +1,4 @@
+mod config_dir;
 mod context_bar;
 mod layout;
 mod payload;
@@ -10,14 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn resolve_todos_dir() -> PathBuf {
-    let claude_dir = match env::var("CLAUDE_CONFIG_DIR") {
-        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => {
-            let home = env::var("HOME").unwrap_or_default();
-            PathBuf::from(home).join(".claude")
-        }
-    };
-    claude_dir.join("todos")
+    config_dir::claude_config_dir().join("todos")
 }
 
 fn main() {
