@@ -1,6 +1,7 @@
 mod context_bar;
 mod layout;
 mod payload;
+mod setup;
 mod todo;
 
 use payload::Payload;
