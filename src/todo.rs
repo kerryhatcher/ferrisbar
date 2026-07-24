@@ -30,7 +30,7 @@ pub fn active_task(session_id: &str, todos_dir: &Path) -> Option<String> {
         let Ok(mtime) = metadata.modified() else {
             continue;
         };
-        if latest.as_ref().map_or(true, |(t, _)| mtime > *t) {
+        if latest.as_ref().is_none_or(|(t, _)| mtime > *t) {
             latest = Some((mtime, entry.path()));
         }
     }
