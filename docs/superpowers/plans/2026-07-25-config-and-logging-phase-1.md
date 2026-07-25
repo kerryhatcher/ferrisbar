@@ -1847,10 +1847,17 @@ fn resolve_todos_dir(cfg: &config::Config) -> PathBuf {
 
 fn main() {
     // Config and logging come up before anything else can fail, so the
-    // failures below are reportable. `cfg` is mutable only so Task 10 can
-    // layer the FERRISBAR_* overrides on before the logger reads it.
+    // failures below are reportable.
     let (mut cfg, warnings) = config::load(paths::config_file().as_deref());
-    let _ = &mut cfg; // Task 10 replaces this line with the env overrides.
+
+    // Environment beats file: applied before the logger reads the config.
+    if let Some(path) = env::var("FERRISBAR_LOG_PATH").ok().filter(|v| !v.is_empty()) {
+        cfg.log.path = path;
+    }
+    if let Some(level) = env::var("FERRISBAR_LOG_LEVEL").ok().filter(|v| !v.is_empty()) {
+        cfg.log.level = level;
+    }
+
     let logger = log::Logger::new(&cfg, paths::data_dir().as_deref());
     for warning in &warnings {
         match warning {
@@ -2269,7 +2276,7 @@ git commit -m "test: isolate the CLI suite from the real home directory"
 
 ---
 
-### Task 10: Environment overrides and documentation
+### Task 10: Documentation and override coverage
 
 **Files:**
 - Modify: `README.md:220-232`
@@ -2363,22 +2370,9 @@ Replace the dependency bullet in `CLAUDE.md`'s Invariants section:
   MSRV floor.
 ```
 
-- [ ] **Step 4: Implement the two `FERRISBAR_*` overrides**
+- [ ] **Step 4: Cover the `FERRISBAR_*` overrides with a test**
 
-The README now documents them, so they must exist. In `src/main.rs`, replace the `let _ = &mut cfg;` placeholder line from Task 8 with:
-
-```rust
-    if let Some(path) = env::var("FERRISBAR_LOG_PATH").ok().filter(|v| !v.is_empty()) {
-        cfg.log.path = path;
-    }
-    if let Some(level) = env::var("FERRISBAR_LOG_LEVEL").ok().filter(|v| !v.is_empty()) {
-        cfg.log.level = level;
-    }
-```
-
-Leave `cfg` declared `mut` — nothing downstream mutates it, and a `let cfg = cfg;` rebind to drop mutability reads as dead code to clippy's nursery lints.
-
-Add an end-to-end test to `tests/cli.rs`:
+Task 8 already implemented both overrides in `src/main.rs`; verify they are present and behave. Add an end-to-end test to `tests/cli.rs`:
 
 ```rust
 #[test]
