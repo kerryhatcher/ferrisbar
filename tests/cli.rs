@@ -495,6 +495,12 @@ fn a_non_writable_data_directory_still_renders() {
     let original_mode = std::fs::metadata(&data_dir).unwrap().permissions().mode();
     std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
+    // Force an actual write attempt. At the default `warn` level the only
+    // event a clean payload generates is the `render` debug event, which
+    // Logger::log filters out before ever calling append — so nothing would
+    // touch the read-only directory and the chmod above would be inert.
+    cmd.env("FERRISBAR_LOG_LEVEL", "debug");
+
     let (stdout, ok) = run(&mut cmd, PAYLOAD);
 
     // Restore before the tempdir is cleaned up.

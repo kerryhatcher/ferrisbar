@@ -211,6 +211,18 @@ mod tests {
     fn an_unreadable_matched_file_produces_a_diagnostic() {
         use std::os::unix::fs::PermissionsExt;
 
+        // Root ignores the 0o000 below, so the file reads fine, no diagnostic
+        // is produced, and the test fails for a reason that has nothing to do
+        // with the code. Matches the guards in log.rs and tests/cli.rs.
+        if std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+        {
+            eprintln!("skipping: running as root, permission checks do not apply");
+            return;
+        }
+
         let dir = tempdir().unwrap();
         write_todo_file(
             dir.path(),
