@@ -358,7 +358,7 @@ Two new runtime dependencies. `CLAUDE.md` requires justification and a
 | Crate | Justification |
 |---|---|
 | `flate2` | gzip for rotated archives. Pinned `default-features = false, features = ["rust_backend"]` so it routes through pure-Rust `miniz_oxide` rather than `libz-sys` — keeping a C toolchain out of the build and keeping `cargo geiger`'s unsafe count down. |
-| `toml` | Config parsing. Chosen over `serde_json` because comments in the generated file are the point. |
+| `toml` | Config parsing. Chosen over `serde_json` because comments in the generated file are the point. Built with `std`, `parse`, and `serde`; `display` is off since the generated file is a static string. The `serde` feature is not optional — `toml::Table` and `toml::Value` are gated behind it in 1.1.3, so even hand-rolled parsing needs it. |
 
 Transitively this adds roughly `miniz_oxide`, `crc32fast`, `toml_edit`,
 `winnow`, `serde_spanned`, and `toml_datetime`.

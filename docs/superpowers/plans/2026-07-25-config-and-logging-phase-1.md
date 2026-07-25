@@ -73,13 +73,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # Pinned below 1.2: toml 1.1.3 declares rust-version 1.85, one patch under
 # our 1.85.1 MSRV. An unbounded range lets `cargo update` break `just msrv`
 # with no code change to attribute it to.
-toml = { version = ">=1.1, <1.2", default-features = false, features = ["std", "parse"] }
+toml = { version = ">=1.1, <1.2", default-features = false, features = ["std", "parse", "serde"] }
 # rust_backend routes through pure-Rust miniz_oxide instead of libz-sys,
 # keeping a C toolchain out of the build and cargo-geiger's unsafe count down.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 ```
 
-`toml`'s `serde` and `display` features are deliberately off. Config is parsed by hand into `toml::Table` for per-field leniency, and the generated file is a static string — so neither serde integration nor a TOML writer is needed.
+`toml`'s `display` feature is deliberately off — the generated file is a static string, so no TOML writer is needed. `serde` is required and not optional: `toml::Table` and `toml::Value` are gated behind it in 1.1.3, so even the hand-rolled `toml::Table` parsing in Task 3 needs it. Config is still parsed by hand rather than via `#[derive(Deserialize)]`, because derive fails the whole document on one wrong-typed field and the spec requires per-field fallback.
 
 - [ ] **Step 2: Resolve the tree and verify MSRV**
 
