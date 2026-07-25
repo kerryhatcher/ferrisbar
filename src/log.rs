@@ -50,7 +50,6 @@ pub fn warn(name: &'static str, msg: impl Into<String>) -> Event {
     }
 }
 
-#[allow(dead_code)] // only called from tests; will be used by main.rs
 pub fn debug(name: &'static str, msg: impl Into<String>) -> Event {
     Event {
         level: Level::Debug,
@@ -87,7 +86,6 @@ pub struct Logger {
 }
 
 impl Logger {
-    #[allow(dead_code)] // only called from tests; will be constructed by main.rs in Task 8
     pub fn new(cfg: &Config, data_dir: Option<&Path>) -> Self {
         let level = Level::from_str_lenient(&cfg.log.level);
         let path = if cfg.log.enabled && level != Level::Off {
@@ -106,7 +104,6 @@ impl Logger {
     /// Never returns an error and never panics. Every failure — no data
     /// directory, unwritable path, full disk — silently disables this write
     /// so the statusline still renders.
-    #[allow(dead_code)] // only called from tests; will be used by main.rs in Task 8
     pub fn log(&self, event: &Event) {
         let Some(path) = &self.path else { return };
         if self.level == Level::Off || event.level > self.level {

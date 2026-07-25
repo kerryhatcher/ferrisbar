@@ -174,9 +174,7 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
 /// let the statusline render. Warnings are returned as data rather than
 /// logged directly, because the config is what determines where the log
 /// lives — the caller flushes them once the logger exists.
-// Public API; wired into main by Task 8. This allow becomes redundant once
-// load is called from main (everything it reaches becomes reachable).
-#[allow(dead_code)]
+// Public API; wired into main by Task 8.
 pub fn load(path: Option<&Path>) -> (Config, Vec<ParseWarning>) {
     let Some(path) = path else {
         return (Config::default(), Vec::new());
