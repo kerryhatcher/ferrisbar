@@ -19,8 +19,11 @@ audit, msrv, deny, trivy, vet, and geiger, failing fast. `just fmt` is
   and exit `0`. A panic here corrupts someone's prompt on every render.
 - **MSRV is 1.85.1** (`rust-version` in Cargo.toml, pinned in CI). Do not use
   stdlib APIs stabilized after it, and do not raise it casually.
-- **Two runtime dependencies is deliberate.** A third needs a justification and
-  a `cargo vet` entry in `supply-chain/`.
+- **Four runtime dependencies is deliberate.** `serde` and `serde_json` for
+  the payload, `toml` for the config file, `flate2` for log rotation. A
+  fifth needs a justification and a `cargo vet` entry in `supply-chain/`.
+  `toml` is version-pinned below 1.2 because it sits one patch under our
+  MSRV floor.
 
 ## Code standards
 

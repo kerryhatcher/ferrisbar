@@ -46,9 +46,11 @@ auto-compaction hits.
   65%, orange to 80%, then a blinking red bar with a 💀 so you notice before
   you get compacted.
 - **⚡ Fast and dependency-light** — one [Rust](https://www.rust-lang.org)
-  binary and two runtime crates ([serde](https://serde.rs) and
-  [serde_json](https://docs.rs/serde_json)). No interpreter to start on every
-  single prompt render.
+  binary and four runtime crates ([serde](https://serde.rs) and
+  [serde_json](https://docs.rs/serde_json) for the payload,
+  [toml](https://docs.rs/toml) for the [config file](#-configuration),
+  [flate2](https://docs.rs/flate2) for log rotation). No interpreter to start
+  on every single prompt render.
 - **🔧 One-command wiring** — [`ferrisbar setup`](#wiring-it-into-claude-code)
   edits your settings in place and preserves every other key.
 - **🛡️ Never breaks your prompt** — partial or wrong-typed JSON
@@ -219,14 +221,61 @@ model            active task              directory     context gauge
 
 ## 🧰 Configuration
 
-There is no config file. Two [environment
-variables](https://en.wikipedia.org/wiki/Environment_variable) cover the cases
-where the defaults are wrong:
+ferrisbar reads an optional TOML config file, creating it with the defaults
+below the first time it runs. Environment variables override anything set
+in the file.
 
-| Variable | Default | What it does |
-| -------- | ------- | ------------ |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Where Claude Code keeps its per-session task files, which is how the active task is found. Set it if your config lives elsewhere. |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | unset → a 16.5% buffer | Token count at which [auto-compaction][compact] fires. Set it to calibrate the gauge exactly instead of trusting the default buffer. |
+### Where things live
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Config | `$XDG_CONFIG_HOME/ferrisbar/config.toml`, else `~/.config/ferrisbar/config.toml` | `~/Library/Application Support/ferrisbar/config.toml` | `%APPDATA%\ferrisbar\config.toml` |
+| Log | `$XDG_DATA_HOME/ferrisbar/logs/`, else `~/.local/share/ferrisbar/logs/` | `~/Library/Application Support/ferrisbar/logs/` | `%LOCALAPPDATA%\ferrisbar\logs\` |
+
+### The config file
+
+```toml
+[log]
+enabled        = true
+level          = "warn"    # "off" | "warn" | "debug"
+path           = ""        # "" = <data dir>/logs/ferrisbar.jsonl
+max_size_bytes = 1048576   # rotate at 1 MiB
+max_archives   = 7         # keep .1.gz … .7.gz
+
+[claude]
+config_dir          = ""   # "" = $CLAUDE_CONFIG_DIR, else ~/.claude
+auto_compact_window = 0    # 0 = use the built-in 16.5% buffer
+```
+
+A relative `log.path` resolves against the data directory, not the
+directory you happen to be in.
+
+### The log
+
+One JSON object per line, at `<data dir>/logs/ferrisbar.jsonl`:
+
+```json
+{"ts":1753467296123,"level":"warn","event":"stdin_parse_failed","session_id":"abc123","msg":"expected value at line 1 column 1"}
+```
+
+`ts` is epoch milliseconds. At the default `warn` level ferrisbar logs only
+when something degrades — a statusline that renders correctly writes
+nothing — so **any content in this file is a signal**. Set `level = "debug"`
+to add one line per render while troubleshooting.
+
+The file rotates at `max_size_bytes` into `ferrisbar.jsonl.1.gz` through
+`.7.gz`, oldest dropped.
+
+### Environment variables
+
+Each overrides its config-file counterpart.
+
+| Variable | Overrides | Notes |
+|---|---|---|
+| `CLAUDE_CONFIG_DIR` | `claude.config_dir` | Where Claude Code keeps its per-session task files, which is how the active task is found. |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `claude.auto_compact_window` | Token count at which [auto-compaction][compact] fires. Set it to calibrate the gauge exactly instead of trusting the default buffer. |
+| `FERRISBAR_LOG_PATH` | `log.path` | Log to somewhere else for one session. |
+| `FERRISBAR_LOG_LEVEL` | `log.level` | Turn logging up without editing the file. |
 
 The gauge's thresholds are fixed, and map to how much of your *usable* window
 is spent:

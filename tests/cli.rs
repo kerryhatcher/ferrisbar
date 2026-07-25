@@ -437,6 +437,32 @@ fn env_var_beats_the_config_file_for_the_claude_dir() {
 }
 
 #[test]
+fn ferrisbar_log_level_env_var_beats_the_config_file() {
+    let (mut cmd, home) = isolated();
+    let dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.toml"), "[log]\nlevel = \"off\"\n").unwrap();
+    cmd.env("FERRISBAR_LOG_LEVEL", "debug");
+
+    let (_, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    let log = home
+        .path()
+        .join(".local")
+        .join("share")
+        .join("ferrisbar")
+        .join("logs")
+        .join("ferrisbar.jsonl");
+    assert!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("\"event\":\"render\""),
+        "FERRISBAR_LOG_LEVEL must override level = \"off\" in the file"
+    );
+}
+
+#[test]
 fn concurrent_renders_never_produce_a_corrupt_archive() {
     use std::io::{Read as _, Write as _};
 
