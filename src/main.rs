@@ -1,6 +1,7 @@
 mod config_dir;
 mod context_bar;
 mod layout;
+mod paths;
 mod payload;
 mod setup;
 mod todo;
