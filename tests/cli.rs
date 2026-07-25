@@ -462,8 +462,93 @@ fn ferrisbar_log_level_env_var_beats_the_config_file() {
     );
 }
 
+/// Shells out to `id -u` rather than an `unsafe extern "C" geteuid` binding —
+/// this is test-only code and the project otherwise has zero unsafe in its
+/// dependency-light build.
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .is_some_and(|s| s.trim() == "0")
+}
+
+/// spec:500 — a non-writable data directory still renders. Unix-only:
+/// Windows has no equivalent of a mode-based read-only directory reachable
+/// from a normal test process. Skipped (not asserted vacuously) under root,
+/// which bypasses directory permission checks entirely.
+#[cfg(unix)]
+#[test]
+fn a_non_writable_data_directory_still_renders() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if running_as_root() {
+        eprintln!("skipping: running as root, permission checks do not apply");
+        return;
+    }
+
+    let (mut cmd, home) = isolated();
+    let data_dir = home.path().join(".local").join("share").join("ferrisbar");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let original_mode = std::fs::metadata(&data_dir).unwrap().permissions().mode();
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (stdout, ok) = run(&mut cmd, PAYLOAD);
+
+    // Restore before the tempdir is cleaned up.
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
+
+    assert!(ok);
+    assert!(
+        stdout.contains("Claude"),
+        "logging must degrade silently rather than blank the statusline"
+    );
+}
+
+#[test]
+fn ferrisbar_log_level_env_var_re_enables_logging_disabled_in_the_file() {
+    let (mut cmd, home) = isolated();
+    let dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.toml"), "[log]\nenabled = false\n").unwrap();
+    cmd.env("FERRISBAR_LOG_LEVEL", "debug");
+
+    let (_, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    let log = home
+        .path()
+        .join(".local")
+        .join("share")
+        .join("ferrisbar")
+        .join("logs")
+        .join("ferrisbar.jsonl");
+    assert!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("\"event\":\"render\""),
+        "FERRISBAR_LOG_LEVEL must be able to re-enable logging even when \
+         enabled = false in the file — env beats file, including for the \
+         user turning logging back on for one session"
+    );
+}
+
 #[test]
 fn concurrent_renders_never_produce_a_corrupt_archive() {
+    // Division of labor with the unit test suite: `O_EXCL` exclusivity of
+    // the rotation lock is pinned by `log.rs`'s
+    // `a_held_lock_defers_rotation_without_losing_the_line`, which fails
+    // under a `create_new` -> `create` mutation. This e2e test cannot detect
+    // that same mutation — a losing writer under a broken lock still
+    // produces a valid-but-misnumbered archive, and the real race window is
+    // microseconds wide against millisecond-scale process spawn — so it is
+    // not this test's job to prove exclusivity. Its job is the thing only a
+    // multi-process test can show: twelve real processes contending on the
+    // same log directory produce at least two genuine rotations, every
+    // resulting archive decompresses cleanly, and no lock file is left
+    // behind.
     use std::io::{Read as _, Write as _};
 
     let home = tempfile::tempdir().unwrap();

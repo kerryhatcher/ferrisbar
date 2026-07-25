@@ -273,7 +273,7 @@ Each overrides its config-file counterpart.
 | Variable | Overrides | Notes |
 |---|---|---|
 | `CLAUDE_CONFIG_DIR` | `claude.config_dir` | Where Claude Code keeps its per-session task files, which is how the active task is found. |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `claude.auto_compact_window` | Token count at which [auto-compaction][compact] fires. Set it to calibrate the gauge exactly instead of trusting the default buffer. |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `claude.auto_compact_window` | Token count at which [auto-compaction][compact] fires. Overrides when set to a positive number; `0`, a negative value, or a string that doesn't parse as a number all defer to the config file. |
 | `FERRISBAR_LOG_PATH` | `log.path` | Log to somewhere else for one session. |
 | `FERRISBAR_LOG_LEVEL` | `log.level` | Turn logging up without editing the file. |
 
