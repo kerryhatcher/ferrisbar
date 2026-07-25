@@ -87,7 +87,7 @@ pub struct Logger {
 }
 
 impl Logger {
-    #[allow(dead_code)] // only called from tests; will be used by config_dir.rs/setup.rs in Task 7
+    #[allow(dead_code)] // only called from tests; will be constructed by main.rs in Task 8
     pub fn new(cfg: &Config, data_dir: Option<&Path>) -> Self {
         let level = Level::from_str_lenient(&cfg.log.level);
         let path = if cfg.log.enabled && level != Level::Off {
