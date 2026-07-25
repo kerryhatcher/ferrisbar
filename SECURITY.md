@@ -39,10 +39,17 @@ support branches.
 ## Disclosure
 
 We follow coordinated disclosure. Once a fix is available we publish a
-[GitHub Security Advisory](https://github.com/kerryhatcher/ferrisbar/security/advisories),
-which also feeds the [RustSec](https://rustsec.org) advisory database, and
-credit you by name unless you would rather stay anonymous. Please give us a
-chance to ship the fix before disclosing publicly.
+[GitHub Security Advisory](https://github.com/kerryhatcher/ferrisbar/security/advisories).
+For anything affecting a published crate we then submit an advisory to
+[RustSec](https://github.com/rustsec/advisory-db), linking the GitHub advisory
+as its source. That is the database
+[`cargo audit`](https://github.com/rustsec/rustsec) reads, and RustSec entries
+are in turn imported into the GitHub Advisory Database — so the RustSec
+submission is what actually reaches Rust users, not the other way round.
+
+We credit reporters by name only with explicit permission. Say nothing and the
+advisory stays anonymous. Please give us a chance to ship the fix before
+disclosing publicly.
 
 ## Scope notes
 

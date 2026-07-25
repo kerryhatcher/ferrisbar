@@ -79,8 +79,9 @@ rest — `just fmt lint test` catches nearly everything on its own.
 - **Keep the dependency tree tiny.** Two runtime crates is a feature, not an
   accident. A PR adding a third needs to argue for it, and will also need a
   `cargo vet` entry.
-- **Never panic on input.** Bad, partial, or absent stdin must degrade to a
-  shorter statusline. A panic here corrupts somebody's prompt on every render.
+- **Never panic on input.** Partial or wrong-typed JSON must degrade to a
+  shorter statusline; stdin that is not JSON at all, or is empty, must print
+  nothing and exit `0`. A panic here corrupts somebody's prompt on every render.
 
 ## Pull requests
 

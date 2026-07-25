@@ -51,9 +51,10 @@ auto-compaction hits.
   single prompt render.
 - **🔧 One-command wiring** — [`ferrisbar setup`](#wiring-it-into-claude-code)
   edits your settings in place and preserves every other key.
-- **🛡️ Never breaks your prompt** — malformed, partial, or absent input
-  [degrades to a shorter line](#-reference-the-input-contract) instead of an
-  error.
+- **🛡️ Never breaks your prompt** — partial or wrong-typed JSON
+  [drops just the affected segment](#-reference-the-input-contract), and input
+  that is not JSON at all prints nothing and exits `0`. Neither path puts a
+  stack trace in your prompt.
 
 ## 🚀 Quick Start
 
@@ -108,9 +109,10 @@ The rest follows from wanting that on screen during every single render:
 ## 📦 Installation
 
 Every route needs a Rust toolchain, and ferrisbar builds on **Rust 1.85.1 or
-newer** — a floor that CI re-verifies with cargo-msrv on every commit, so a
-stale toolchain fails loudly rather than mysteriously. The usual way, which
-drops the binary at `~/.cargo/bin/ferrisbar`:
+newer** — a floor CI re-checks on every commit by running the whole test suite
+against that exact toolchain, so a stale toolchain fails loudly rather than
+mysteriously. The usual way, which drops the binary at
+`~/.cargo/bin/ferrisbar`:
 
 ```bash
 cargo install ferrisbar
