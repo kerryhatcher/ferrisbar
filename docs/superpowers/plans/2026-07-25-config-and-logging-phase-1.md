@@ -1481,6 +1481,12 @@ impl Logger {
             return None;
         }
         // Lock held for the whole rotation; released on drop.
+        //
+        // The `?` here returns None, meaning "nothing to report". Losing
+        // the lock race is a deferral, not a failure — another process is
+        // rotating and this one simply appends. Do not "fix" this into
+        // `return Some("lock unavailable")`: that would emit a
+        // log_rotate_failed line on every render of every losing process.
         let _guard = acquire_lock(dir)?;
 
         // Re-check under the lock: another process may have just rotated.
@@ -1576,8 +1582,11 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
             .unwrap();
         children.push(child);
     }
-    for mut child in children {
-        assert!(child.wait().unwrap().success());
+    for child in children {
+        // wait_with_output, not wait: the children have piped stdout, and
+        // waiting without draining the pipe can deadlock if a child ever
+        // writes more than the pipe buffer holds.
+        assert!(child.wait_with_output().unwrap().status.success());
     }
 
     // Every archive that exists must decompress cleanly.
@@ -2365,10 +2374,9 @@ The README now documents them, so they must exist. In `src/main.rs`, replace the
     if let Some(level) = env::var("FERRISBAR_LOG_LEVEL").ok().filter(|v| !v.is_empty()) {
         cfg.log.level = level;
     }
-    let cfg = cfg;
 ```
 
-The trailing rebind drops mutability so nothing downstream can alter the config after the logger has read it.
+Leave `cfg` declared `mut` — nothing downstream mutates it, and a `let cfg = cfg;` rebind to drop mutability reads as dead code to clippy's nursery lints.
 
 Add an end-to-end test to `tests/cli.rs`:
 
