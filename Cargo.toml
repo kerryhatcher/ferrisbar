@@ -9,7 +9,7 @@ repository = "https://github.com/kerryhatcher/ferrisbar"
 readme = "README.md"
 keywords = ["claude-code", "statusline", "cli"]
 categories = ["command-line-utilities"]
-exclude = ["docs/"]
+exclude = ["docs/", "assets/"]
 
 [[bin]]
 name = "ferrisbar"

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 280" width="960" height="280" role="img"
+     aria-label="Terminal showing the ferrisbar statusline at four context levels: a green empty bar at 0 percent, a yellow half-full bar at 50 percent, an orange bar at 70 percent, and a red bar with a skull at 85 percent. Each line reads: Opus 5, the active task 'Wiring up the release pipeline', the directory ferrisbar, then the context bar.">
+  <title>The ferrisbar statusline at four context levels</title>
+  <defs>
+    <clipPath id="d-clip"><rect width="960" height="280" rx="12"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#d-clip)">
+    <rect width="960" height="280" fill="#1C1917"/>
+    <rect width="960" height="38" fill="#292421"/>
+    <circle cx="22" cy="19" r="6" fill="#F85149"/>
+    <circle cx="42" cy="19" r="6" fill="#D29922"/>
+    <circle cx="62" cy="19" r="6" fill="#3FB950"/>
+    <text x="480" y="24" text-anchor="middle"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="13" fill="#8A8580">ferrisbar</text>
+  </g>
+  <rect x="0.5" y="0.5" width="959" height="279" rx="12" fill="none" stroke="#3A332E"/>
+
+  <text x="28" y="76" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="13.5" fill="#6E6A66"># one session, four moments — the bar tracks context as it fills</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+
+    <!-- row 1 — 0% used, green: 0 of 10 blocks filled -->
+    <text x="28" y="118" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
+    <rect x="516" y="107" width="170" height="12" fill="#3FB950" opacity="0.18"/>
+    <text x="700" y="118" fill="#3FB950">0%</text>
+    <text x="760" y="118" font-size="12.5" fill="#6E6A66">fresh session</text>
+
+    <!-- row 2 — 50% used, yellow: 5 of 10 blocks filled -->
+    <text x="28" y="160" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
+    <rect x="516" y="149" width="170" height="12" fill="#D29922" opacity="0.18"/>
+    <rect x="516" y="149" width="85" height="12" fill="#D29922"/>
+    <text x="700" y="160" fill="#D29922">50%</text>
+    <text x="760" y="160" font-size="12.5" fill="#6E6A66">watch the pace</text>
+
+    <!-- row 3 — 70% used, orange (xterm 208): 7 of 10 blocks filled -->
+    <text x="28" y="202" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
+    <rect x="516" y="191" width="170" height="12" fill="#FF8700" opacity="0.18"/>
+    <rect x="516" y="191" width="119" height="12" fill="#FF8700"/>
+    <text x="700" y="202" fill="#FF8700">70%</text>
+    <text x="760" y="202" font-size="12.5" fill="#6E6A66">wrap it up</text>
+
+    <!-- row 4 — 85% used, blinking red with skull: 8 of 10 blocks filled -->
+    <text x="28" y="244" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
+    <g transform="translate(496 239)" fill="#F85149">
+      <circle cx="0" cy="-4" r="6.4"/>
+      <rect x="-3.6" y="0.6" width="7.2" height="4" rx="1.6"/>
+      <circle cx="-2.4" cy="-4.4" r="2.1" fill="#1C1917"/>
+      <circle cx="2.4" cy="-4.4" r="2.1" fill="#1C1917"/>
+    </g>
+    <rect x="516" y="233" width="170" height="12" fill="#F85149" opacity="0.18"/>
+    <rect x="516" y="233" width="136" height="12" fill="#F85149"/>
+    <text x="700" y="244" fill="#F85149">85%</text>
+    <text x="760" y="244" font-size="12.5" fill="#6E6A66">compact imminent</text>
+
+  </g>
+</svg>
