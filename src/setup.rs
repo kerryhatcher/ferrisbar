@@ -90,8 +90,13 @@ pub fn run(project_scope: bool, cfg: &crate::config::Config) -> Result<(), Strin
     if let Some(path) = crate::paths::config_file() {
         println!("Config: {}", path.display());
     }
-    if let Some(dir) = crate::paths::data_dir() {
-        println!("Log:    {}", crate::paths::default_log_path(&dir).display());
+    let level = crate::log::Level::from_str_lenient(&cfg.log.level);
+    if cfg.log.enabled && level != crate::log::Level::Off {
+        if let Some(log_path) =
+            crate::log::resolve_log_path(&cfg.log.path, crate::paths::data_dir().as_deref())
+        {
+            println!("Log:    {}", log_path.display());
+        }
     }
     println!("Start a new Claude Code session for the change to take effect.");
 

@@ -242,7 +242,7 @@ fn gzip_into(source: &Path, dest: &Path) -> std::io::Result<()> {
 /// relative path resolves against the data dir, never the process working
 /// directory — the cwd is whatever project Claude Code is running in, and
 /// resolving there would scatter log files across repositories.
-fn resolve_log_path(configured: &str, data_dir: Option<&Path>) -> Option<PathBuf> {
+pub fn resolve_log_path(configured: &str, data_dir: Option<&Path>) -> Option<PathBuf> {
     if configured.is_empty() {
         return data_dir.map(paths::default_log_path);
     }
@@ -402,6 +402,53 @@ mod tests {
         let logger = Logger::new(&Config::default(), None);
         logger.log(&warn("stdin_parse_failed", "x"));
         // Reaching this line without a panic is the assertion.
+    }
+
+    /// Shells out to `id -u` rather than an `unsafe extern "C" geteuid`
+    /// binding — this is test-only code and the project otherwise has zero
+    /// unsafe in its dependency-light build.
+    #[cfg(unix)]
+    fn running_as_root() -> bool {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .is_some_and(|s| s.trim() == "0")
+    }
+
+    /// Unix-only: Windows has no equivalent of a mode-based read-only
+    /// directory reachable from a normal test process. Skipped rather than
+    /// asserted-vacuously when running as root, since root bypasses
+    /// directory permission checks entirely and the write would succeed.
+    #[cfg(unix)]
+    #[test]
+    fn read_only_log_directory_disables_logging_without_erroring() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if running_as_root() {
+            eprintln!("skipping: running as root, permission checks do not apply");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let logs_dir = dir.path().join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        let original_mode = std::fs::metadata(&logs_dir).unwrap().permissions().mode();
+        std::fs::set_permissions(&logs_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let logger = Logger::new(&Config::default(), Some(dir.path()));
+        logger.log(&warn("stdin_parse_failed", "x"));
+
+        // Restore before the tempdir is cleaned up.
+        std::fs::set_permissions(&logs_dir, std::fs::Permissions::from_mode(original_mode))
+            .unwrap();
+
+        let base = crate::paths::default_log_path(dir.path());
+        assert!(
+            !base.exists(),
+            "a read-only log directory must not produce a log file, and must not panic"
+        );
     }
 
     use std::io::Read as _;
