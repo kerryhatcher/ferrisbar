@@ -1543,9 +1543,13 @@ cargo test --bin ferrisbar log::
 
 Expected: PASS — 19 tests on Unix, 18 on Windows (one is `cfg(unix)`).
 
-- [ ] **Step 5: Add the concurrency test**
+- [ ] **Step 5: Do not add the concurrency test here — it moved to Task 9**
 
-Rotation races cannot be reproduced in-process. Add to `tests/cli.rs` — it will be wired to the tempdir helper in Task 9, so for now construct the environment inline:
+An earlier revision of this plan placed the multi-process concurrency test in this task. It cannot work here: `main.rs` does not construct a `Logger` until Task 8, so the log directory never exists and the test fails deterministically rather than exercising anything. It also would not have exercised rotation even after Task 8 — a dozen short debug lines total 1–2 KB against a 4096-byte threshold, so it would have passed trivially with zero archives.
+
+The test now lives in Task 9, after `main.rs` is wired, and pre-seeds the log file over the threshold so rotation actually fires. Skip to Step 6.
+
+The test that was here, kept for reference only — **do not add it in this task**:
 
 ```rust
 #[test]
@@ -1606,26 +1610,18 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
 
 `flate2` is a runtime dependency, so it is available to integration tests without a dev-dependency entry.
 
-- [ ] **Step 6: Run the concurrency test**
-
-```bash
-cargo test --test cli concurrent_renders
-```
-
-Expected: PASS. If it fails intermittently, the ordering in `rotate_if_needed` is wrong — re-read the ordering note at the top of this task rather than adding retries.
-
-- [ ] **Step 7: Lint and run the full suite**
+- [ ] **Step 6: Lint and run the full suite**
 
 ```bash
 just lint && just test
 ```
 
-Expected: both PASS.
+Expected: both PASS. `tests/cli.rs` must be left untouched by this task.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/log.rs tests/cli.rs
+git add src/log.rs
 git commit -m "feat: rotate the log at a size limit into gzip archives"
 ```
 
@@ -2250,6 +2246,75 @@ fn env_var_beats_the_config_file_for_the_claude_dir() {
     assert!(stdout.contains("Shipping it"), "CLAUDE_CONFIG_DIR must still win");
 }
 ```
+
+- [ ] **Step 4b: Add the multi-process concurrency test**
+
+This test was originally placed in Task 6 and moved here, because it needs `main.rs` to actually construct a `Logger` — which only happens as of Task 8.
+
+Rotation races cannot be reproduced in-process, so this is the only coverage for the lock ordering in `rotate_if_needed`. Two details are load-bearing: the log file is **pre-seeded past the threshold** so rotation actually fires (a dozen short debug lines total 1–2 KB against a 4096-byte limit and would otherwise never trigger it), and `level = "debug"` guarantees every process writes.
+
+```rust
+#[test]
+fn concurrent_renders_never_produce_a_corrupt_archive() {
+    use std::io::Read as _;
+
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[log]\nlevel = \"debug\"\nmax_size_bytes = 4096\nmax_archives = 5\n",
+    )
+    .unwrap();
+
+    // Pre-seed the log past max_size_bytes so the very first render rotates.
+    // Without this the test passes trivially with zero archives.
+    let logs = home.path().join(".local").join("share").join("ferrisbar").join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let log_file = logs.join("ferrisbar.jsonl");
+    std::fs::write(&log_file, format!("{}\n", "s".repeat(8192))).unwrap();
+
+    let mut children = Vec::new();
+    for _ in 0..12 {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+        cmd.env("HOME", home.path())
+            .env("APPDATA", home.path())
+            .env("LOCALAPPDATA", home.path())
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("FERRISBAR_LOG_PATH")
+            .env_remove("FERRISBAR_LOG_LEVEL")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        use std::io::Write as _;
+        child.stdin.take().unwrap().write_all(PAYLOAD.as_bytes()).unwrap();
+        children.push(child);
+    }
+    for child in children {
+        // wait_with_output, not wait: the children have piped stdout, and
+        // waiting without draining the pipe can deadlock.
+        assert!(child.wait_with_output().unwrap().status.success());
+    }
+
+    let mut archives = 0;
+    for entry in std::fs::read_dir(&logs).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "gz") {
+            archives += 1;
+            let mut out = String::new();
+            flate2::read::GzDecoder::new(std::fs::File::open(&path).unwrap())
+                .read_to_string(&mut out)
+                .unwrap_or_else(|e| panic!("{} is corrupt: {e}", path.display()));
+        }
+    }
+    assert!(archives >= 1, "the pre-seeded oversized log must have rotated at least once");
+    assert!(!logs.join(".rotate.lock").exists(), "no lock may be left behind");
+}
+```
+
+`flate2` is a runtime dependency, so integration tests can use it without a dev-dependency entry.
 
 - [ ] **Step 5: Run the new tests**
 
