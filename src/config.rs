@@ -1,3 +1,5 @@
+use std::path::Path;
+
 /// Written verbatim when no config file exists. A static string rather than
 /// a serialized `Config`, because serializing would strip the comments —
 /// which are the entire reason TOML was chosen over the already-vendored
@@ -30,6 +32,10 @@ pub const MAX_MAX_ARCHIVES: u8 = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseWarning {
     Syntax(String),
+    // Created by Task 4 (file I/O); constructed when path-related I/O fails.
+    // Won't be reached until Task 8 wires `load` into the main binary.
+    #[allow(dead_code)]
+    Create(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +172,42 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
     (config, Vec::new())
 }
 
+/// Reads the config file, creating it from `TEMPLATE` when absent.
+///
+/// Infallible by construction: a missing home directory, an unreadable
+/// file, a read-only directory, or malformed TOML all yield defaults and
+/// let the statusline render. Warnings are returned as data rather than
+/// logged directly, because the config is what determines where the log
+/// lives — the caller flushes them once the logger exists.
+// Public API; wired into main by Task 8.
+#[allow(dead_code)]
+pub fn load(path: Option<&Path>) -> (Config, Vec<ParseWarning>) {
+    let Some(path) = path else {
+        return (Config::default(), Vec::new());
+    };
+
+    match std::fs::read_to_string(path) {
+        Ok(contents) => from_toml_str(&contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut warnings = Vec::new();
+            if let Err(e) = create_template(path) {
+                warnings.push(ParseWarning::Create(e.to_string()));
+            }
+            (Config::default(), warnings)
+        }
+        Err(e) => (Config::default(), vec![ParseWarning::Create(e.to_string())]),
+    }
+}
+
+// Helper for `load`; not called until Task 8 wires load into main.
+#[allow(dead_code)]
+fn create_template(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, TEMPLATE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +302,70 @@ mod tests {
         let (c, _) = from_toml_str("[log]\nmax_size_bytes = -1\nmax_archives = -5\n");
         assert_eq!(c.log.max_size_bytes, Config::default().log.max_size_bytes);
         assert_eq!(c.log.max_archives, Config::default().log.max_archives);
+    }
+
+    #[test]
+    fn load_with_no_path_yields_defaults_silently() {
+        let (c, warnings) = load(None);
+        assert_eq!(c, Config::default());
+        assert!(
+            warnings.is_empty(),
+            "an unresolvable home is not a fault to report"
+        );
+    }
+
+    #[test]
+    fn load_creates_the_file_and_its_parent_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("config.toml");
+
+        let (c, warnings) = load(Some(&path));
+
+        assert!(path.exists(), "config file must be created on first run");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TEMPLATE);
+        assert_eq!(c, Config::default());
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn load_reads_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[log]\nmax_archives = 3\n").unwrap();
+
+        let (c, warnings) = load(Some(&path));
+
+        assert_eq!(c.log.max_archives, 3);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn load_does_not_overwrite_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "[log]\nmax_archives = 3\n";
+        std::fs::write(&path, original).unwrap();
+
+        let _ = load(Some(&path));
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn load_of_malformed_file_warns_once_and_leaves_it_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "not = = toml";
+        std::fs::write(&path, original).unwrap();
+
+        let (c, warnings) = load(Some(&path));
+
+        assert_eq!(c, Config::default());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "a malformed config is never overwritten — the user's edits are theirs"
+        );
     }
 }
