@@ -257,6 +257,14 @@ An empty string is treated as unset at every layer, matching how
 The two `FERRISBAR_*` variables exist so logging can be turned up for a
 single session without editing a file — the common debugging move.
 
+Because that is their purpose, an explicitly-set, non-empty
+`FERRISBAR_LOG_LEVEL` other than `"off"` also implies `enabled = true`,
+overriding `log.enabled` in the file. Without this, the one user the
+variable exists for — someone who set `enabled = false` and now wants a
+session's worth of diagnostics — could not use it, and env-beats-file
+would be true of `log.level` but silently false of `log.enabled`.
+`FERRISBAR_LOG_LEVEL=off` still disables.
+
 Phase 2 adds no environment variables for `[display]`; those are
 file-only.
 
