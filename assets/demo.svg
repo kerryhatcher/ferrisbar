@@ -22,49 +22,27 @@
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
 
-    <!-- row 1 — 0% used, green -->
+    <!-- row 1 — 0% used, green: 0 of 10 blocks filled -->
     <text x="28" y="118" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
-    <g fill="#3FB950" opacity="0.16">
-      <rect x="516" y="107" width="14" height="12" rx="2"/><rect x="534" y="107" width="14" height="12" rx="2"/>
-      <rect x="552" y="107" width="14" height="12" rx="2"/><rect x="570" y="107" width="14" height="12" rx="2"/>
-      <rect x="588" y="107" width="14" height="12" rx="2"/><rect x="606" y="107" width="14" height="12" rx="2"/>
-      <rect x="624" y="107" width="14" height="12" rx="2"/><rect x="642" y="107" width="14" height="12" rx="2"/>
-      <rect x="660" y="107" width="14" height="12" rx="2"/><rect x="678" y="107" width="14" height="12" rx="2"/>
-    </g>
-    <text x="708" y="118" fill="#3FB950">0%</text>
-    <text x="768" y="118" font-size="12.5" fill="#6E6A66">fresh session</text>
+    <rect x="516" y="107" width="170" height="12" fill="#3FB950" opacity="0.18"/>
+    <text x="700" y="118" fill="#3FB950">0%</text>
+    <text x="760" y="118" font-size="12.5" fill="#6E6A66">fresh session</text>
 
-    <!-- row 2 — 50% used, yellow -->
+    <!-- row 2 — 50% used, yellow: 5 of 10 blocks filled -->
     <text x="28" y="160" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
-    <g fill="#D29922">
-      <rect x="516" y="149" width="14" height="12" rx="2"/><rect x="534" y="149" width="14" height="12" rx="2"/>
-      <rect x="552" y="149" width="14" height="12" rx="2"/><rect x="570" y="149" width="14" height="12" rx="2"/>
-      <rect x="588" y="149" width="14" height="12" rx="2"/>
-      <g opacity="0.16">
-        <rect x="606" y="149" width="14" height="12" rx="2"/><rect x="624" y="149" width="14" height="12" rx="2"/>
-        <rect x="642" y="149" width="14" height="12" rx="2"/><rect x="660" y="149" width="14" height="12" rx="2"/>
-        <rect x="678" y="149" width="14" height="12" rx="2"/>
-      </g>
-    </g>
-    <text x="708" y="160" fill="#D29922">50%</text>
-    <text x="768" y="160" font-size="12.5" fill="#6E6A66">watch the pace</text>
+    <rect x="516" y="149" width="170" height="12" fill="#D29922" opacity="0.18"/>
+    <rect x="516" y="149" width="85" height="12" fill="#D29922"/>
+    <text x="700" y="160" fill="#D29922">50%</text>
+    <text x="760" y="160" font-size="12.5" fill="#6E6A66">watch the pace</text>
 
-    <!-- row 3 — 70% used, orange (xterm 208) -->
+    <!-- row 3 — 70% used, orange (xterm 208): 7 of 10 blocks filled -->
     <text x="28" y="202" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
-    <g fill="#FF8700">
-      <rect x="516" y="191" width="14" height="12" rx="2"/><rect x="534" y="191" width="14" height="12" rx="2"/>
-      <rect x="552" y="191" width="14" height="12" rx="2"/><rect x="570" y="191" width="14" height="12" rx="2"/>
-      <rect x="588" y="191" width="14" height="12" rx="2"/><rect x="606" y="191" width="14" height="12" rx="2"/>
-      <rect x="624" y="191" width="14" height="12" rx="2"/>
-      <g opacity="0.16">
-        <rect x="642" y="191" width="14" height="12" rx="2"/><rect x="660" y="191" width="14" height="12" rx="2"/>
-        <rect x="678" y="191" width="14" height="12" rx="2"/>
-      </g>
-    </g>
-    <text x="708" y="202" fill="#FF8700">70%</text>
-    <text x="768" y="202" font-size="12.5" fill="#6E6A66">wrap it up</text>
+    <rect x="516" y="191" width="170" height="12" fill="#FF8700" opacity="0.18"/>
+    <rect x="516" y="191" width="119" height="12" fill="#FF8700"/>
+    <text x="700" y="202" fill="#FF8700">70%</text>
+    <text x="760" y="202" font-size="12.5" fill="#6E6A66">wrap it up</text>
 
-    <!-- row 4 — 85% used, blinking red with skull -->
+    <!-- row 4 — 85% used, blinking red with skull: 8 of 10 blocks filled -->
     <text x="28" y="244" fill="#8A8580">Opus 5 │ <tspan fill="#F0EBE4" font-weight="700">Wiring up the release pipeline</tspan> │ ferrisbar │</text>
     <g transform="translate(496 239)" fill="#F85149">
       <circle cx="0" cy="-4" r="6.4"/>
@@ -72,17 +50,10 @@
       <circle cx="-2.4" cy="-4.4" r="2.1" fill="#1C1917"/>
       <circle cx="2.4" cy="-4.4" r="2.1" fill="#1C1917"/>
     </g>
-    <g fill="#F85149">
-      <rect x="516" y="233" width="14" height="12" rx="2"/><rect x="534" y="233" width="14" height="12" rx="2"/>
-      <rect x="552" y="233" width="14" height="12" rx="2"/><rect x="570" y="233" width="14" height="12" rx="2"/>
-      <rect x="588" y="233" width="14" height="12" rx="2"/><rect x="606" y="233" width="14" height="12" rx="2"/>
-      <rect x="624" y="233" width="14" height="12" rx="2"/><rect x="642" y="233" width="14" height="12" rx="2"/>
-      <g opacity="0.16">
-        <rect x="660" y="233" width="14" height="12" rx="2"/><rect x="678" y="233" width="14" height="12" rx="2"/>
-      </g>
-    </g>
-    <text x="708" y="244" fill="#F85149">85%</text>
-    <text x="768" y="244" font-size="12.5" fill="#6E6A66">compact imminent</text>
+    <rect x="516" y="233" width="170" height="12" fill="#F85149" opacity="0.18"/>
+    <rect x="516" y="233" width="136" height="12" fill="#F85149"/>
+    <text x="700" y="244" fill="#F85149">85%</text>
+    <text x="760" y="244" font-size="12.5" fill="#6E6A66">compact imminent</text>
 
   </g>
 </svg>
