@@ -172,7 +172,7 @@ fn main() {
         .file_name()
         .map_or_else(|| cwd.clone(), |n| n.to_string_lossy().into_owned());
 
-    let output = layout::compose_statusline(&model, &ctx, task.as_deref(), &dirname);
+    let output = layout::compose_statusline(&model, &ctx, task.as_deref(), &dirname, cfg.display.show_task);
 
     let used_pct = payload
         .remaining_percentage()
