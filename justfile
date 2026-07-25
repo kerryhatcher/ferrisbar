@@ -30,6 +30,11 @@ deny:
 trivy:
     trivy fs --scanners vuln,secret --exit-code 1 --skip-dirs target .
 
+# Check the dependency tree against our supply-chain trust policy
+# (see supply-chain/config.toml).
+vet:
+    cargo vet check
+
 # Report unsafe-code usage in this crate and its dependency tree.
 # Informational only — not a pass/fail gate (the leading `-` ignores
 # cargo-geiger's exit code, which can be nonzero on internal warnings
@@ -38,4 +43,4 @@ geiger:
     -cargo geiger
 
 # Run every check. Fails fast on the first failing recipe.
-ci: fmt lint test audit msrv deny trivy geiger
+ci: fmt lint test audit msrv deny trivy vet geiger
