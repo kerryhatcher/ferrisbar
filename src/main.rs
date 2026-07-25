@@ -158,7 +158,7 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(cfg.claude.auto_compact_window);
-    let ctx = context_bar::render(payload.remaining_percentage(), payload.total_tokens(), acw);
+    let ctx = context_bar::render(payload.remaining_percentage(), payload.total_tokens(), acw, &cfg.display);
 
     let todos_dir = resolve_todos_dir(&cfg);
     let (task, todo_diagnostic) = todo::active_task(&session_id, &todos_dir);
