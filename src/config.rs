@@ -221,9 +221,7 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
             // value is a configuration error, not a reason to guess which
             // one the user meant.
             let (threshold_yellow, threshold_orange, threshold_critical) =
-                if threshold_yellow < threshold_orange
-                    && threshold_orange < threshold_critical
-                {
+                if threshold_yellow < threshold_orange && threshold_orange < threshold_critical {
                     (threshold_yellow, threshold_orange, threshold_critical)
                 } else {
                     (
@@ -233,8 +231,7 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
                     )
                 };
 
-            let show_task =
-                get_bool(display, "show_task").unwrap_or(defaults_display.show_task);
+            let show_task = get_bool(display, "show_task").unwrap_or(defaults_display.show_task);
 
             DisplayConfig {
                 bar_width,

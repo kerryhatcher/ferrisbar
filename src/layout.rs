@@ -78,10 +78,7 @@ mod tests {
     #[test]
     fn show_task_false_suppresses_task() {
         let out = compose_statusline("Claude", "", Some("Fix bug"), "myproject", false);
-        assert_eq!(
-            out,
-            format!("{DIM}Claude{RESET} │ {DIM}myproject{RESET}")
-        );
+        assert_eq!(out, format!("{DIM}Claude{RESET} │ {DIM}myproject{RESET}"));
         // The task text must not appear anywhere.
         assert!(!out.contains("Fix bug"));
     }

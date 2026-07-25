@@ -158,7 +158,12 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(cfg.claude.auto_compact_window);
-    let ctx = context_bar::render(payload.remaining_percentage(), payload.total_tokens(), acw, &cfg.display);
+    let ctx = context_bar::render(
+        payload.remaining_percentage(),
+        payload.total_tokens(),
+        acw,
+        &cfg.display,
+    );
 
     let todos_dir = resolve_todos_dir(&cfg);
     let (task, todo_diagnostic) = todo::active_task(&session_id, &todos_dir);
@@ -172,7 +177,13 @@ fn main() {
         .file_name()
         .map_or_else(|| cwd.clone(), |n| n.to_string_lossy().into_owned());
 
-    let output = layout::compose_statusline(&model, &ctx, task.as_deref(), &dirname, cfg.display.show_task);
+    let output = layout::compose_statusline(
+        &model,
+        &ctx,
+        task.as_deref(),
+        &dirname,
+        cfg.display.show_task,
+    );
 
     let used_pct = payload
         .remaining_percentage()

@@ -51,7 +51,10 @@ mod tests {
 
     #[test]
     fn render_empty_when_no_remaining_percentage() {
-        assert_eq!(render(None, 1_000_000.0, 0.0, &DisplayConfig::default()), "");
+        assert_eq!(
+            render(None, 1_000_000.0, 0.0, &DisplayConfig::default()),
+            ""
+        );
     }
 
     #[test]
@@ -150,7 +153,10 @@ mod tests {
 
     #[test]
     fn bar_width_1_renders_single_character() {
-        let d = DisplayConfig { bar_width: 1, ..DisplayConfig::default() };
+        let d = DisplayConfig {
+            bar_width: 1,
+            ..DisplayConfig::default()
+        };
         let out = render(Some(100.0), 1_000_000.0, 0.0, &d); // used=0
         assert!(out.contains("░ 0%"));
         assert!(!out.contains("░░")); // only one character
@@ -158,7 +164,10 @@ mod tests {
 
     #[test]
     fn bar_width_1_at_full_usage_renders_single_block() {
-        let d = DisplayConfig { bar_width: 1, ..DisplayConfig::default() };
+        let d = DisplayConfig {
+            bar_width: 1,
+            ..DisplayConfig::default()
+        };
         let out = render(Some(0.0), 1_000_000.0, 0.0, &d); // used=100
         assert!(out.contains("█ 100%"));
         assert!(!out.contains("██"));
@@ -166,7 +175,10 @@ mod tests {
 
     #[test]
     fn bar_width_20_renders_twenty_characters() {
-        let d = DisplayConfig { bar_width: 20, ..DisplayConfig::default() };
+        let d = DisplayConfig {
+            bar_width: 20,
+            ..DisplayConfig::default()
+        };
         let out = render(Some(100.0), 1_000_000.0, 0.0, &d); // used=0
         assert!(out.contains(&"░".repeat(20)));
     }
@@ -196,11 +208,17 @@ mod tests {
     #[test]
     fn width_does_not_panic_at_edge_cases() {
         // width=1, used=100 — the underflow risk from the spec
-        let d = DisplayConfig { bar_width: 1, ..DisplayConfig::default() };
+        let d = DisplayConfig {
+            bar_width: 1,
+            ..DisplayConfig::default()
+        };
         let out = render(Some(0.0), 1_000_000.0, 0.0, &d);
         assert!(out.contains("█ 100%"));
         // width=100, used=0
-        let d = DisplayConfig { bar_width: 100, ..DisplayConfig::default() };
+        let d = DisplayConfig {
+            bar_width: 100,
+            ..DisplayConfig::default()
+        };
         let out = render(Some(100.0), 1_000_000.0, 0.0, &d);
         assert!(out.contains(&"░".repeat(100)));
     }
