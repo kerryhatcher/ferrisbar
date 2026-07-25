@@ -22,6 +22,14 @@ auto-compaction hits.
     <img src="assets/demo.svg" width="880" alt="Terminal showing the ferrisbar statusline at four context levels: green and empty at 0%, yellow and half full at 50%, orange at 70%, and blinking red with a skull at 85%">
 </p>
 
+<p align="center">
+    <img src="assets/screenshot.png" width="880" alt="ferrisbar running at the bottom of a live Claude Code session, showing the model, the in-progress task, the directory, and a green context bar at 25%">
+</p>
+
+<p align="center">
+  <sub>The bottom line is ferrisbar, in a real session.</sub>
+</p>
+
 ## ✨ Features
 
 - **📊 A context gauge that means something** — the bar reports how much of
@@ -30,7 +38,10 @@ auto-compaction hits.
 - **🎯 Shows your current task** — reads the
   [task list](https://docs.claude.com/en/docs/claude-code/overview) Claude Code
   maintains while it works and surfaces the one item marked `in_progress`, so
-  the line says what the agent is *doing*, not just where it is.
+  the line says what the agent is *doing*, not just where it is. Claude Code
+  2.1.220 moved where it keeps those files, so this segment does not currently
+  appear on recent versions —
+  [#4](https://github.com/kerryhatcher/ferrisbar/issues/4) tracks the fix.
 - **🚦 Escalating urgency** — [green](#-configuration) under 50%, yellow to
   65%, orange to 80%, then a blinking red bar with a 💀 so you notice before
   you get compacted.
