@@ -2053,12 +2053,20 @@ This is a retrofit, not an addition. Now that `main` creates a config file, ever
 Add near the top of `tests/cli.rs`:
 
 ```rust
-/// Every `Command` in this file must come from here. Without the env
-/// overrides, running the suite writes into the developer's real
-/// ~/.config and ~/.local/share — and rotates and gzips their real log.
+/// Neutralizes every environment variable ferrisbar reads, pointing it at a
+/// throwaway home. Without this, running the suite writes into the
+/// developer's real ~/.config and ~/.local/share — and rotates and gzips
+/// their real log.
+///
+/// Most tests should use this. A few deliberately bypass it because they
+/// need an env state it cannot produce (unset HOME, a second Command
+/// sharing an existing tempdir); those set their own vars explicitly and
+/// must neutralize the same list.
 ///
 /// The returned TempDir must stay alive for the duration of the test; it
-/// deletes the directory tree on drop.
+/// deletes the directory tree on drop. Bind it to a named variable —
+/// binding to bare `_` drops it immediately, deleting the directory before
+/// the child process runs.
 fn isolated() -> (std::process::Command, tempfile::TempDir) {
     let home = tempfile::tempdir().unwrap();
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
@@ -2068,10 +2076,14 @@ fn isolated() -> (std::process::Command, tempfile::TempDir) {
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
         .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+        .env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        .env_remove("FERRISBAR_LOG_PATH")
+        .env_remove("FERRISBAR_LOG_LEVEL");
     (cmd, home)
 }
 ```
+
+`FERRISBAR_LOG_PATH` and `FERRISBAR_LOG_LEVEL` matter as much as the rest: Task 8 makes both beat the config file outright, so a developer with `FERRISBAR_LOG_PATH` exported would have the suite write to that path — silently reintroducing the leak this helper exists to close — and `FERRISBAR_LOG_LEVEL=off` would suppress the very records some tests assert on.
 
 - [ ] **Step 2: Route every existing test through it**
 
@@ -2251,7 +2263,9 @@ fn env_var_beats_the_config_file_for_the_claude_dir() {
 
 This test was originally placed in Task 6 and moved here, because it needs `main.rs` to actually construct a `Logger` — which only happens as of Task 8.
 
-Rotation races cannot be reproduced in-process, so this is the only coverage for the lock ordering in `rotate_if_needed`. Two details are load-bearing: the log file is **pre-seeded past the threshold** so rotation actually fires (a dozen short debug lines total 1–2 KB against a 4096-byte limit and would otherwise never trigger it), and `level = "debug"` guarantees every process writes.
+Rotation races cannot be reproduced in-process, so this is the only coverage for the lock ordering in `rotate_if_needed`. That makes it worth getting right — an earlier version of this test was **vacuous**: it pre-seeded the log once, so the first process rotated and the remaining eleven then saw a small file and never attempted rotation at all. Mutation-testing proved the point — removing `create_new` exclusivity from `acquire_lock` left it passing 8 runs out of 8.
+
+The fix is to make **every** process find an oversized file, which means each render must itself write more than `max_size_bytes`. A 6000-character model name does that: the `render` debug event embeds the model name in its message, so each line exceeds the 4096-byte floor and every process both rotates and refills. Three details are therefore load-bearing: the oversized model name, `level = "debug"` so every process writes, and asserting **at least two** archives so a single-rotation run cannot pass.
 
 ```rust
 #[test]
@@ -2267,12 +2281,18 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
     )
     .unwrap();
 
-    // Pre-seed the log past max_size_bytes so the very first render rotates.
-    // Without this the test passes trivially with zero archives.
+    // Every process must find an oversized file, or only the first rotates
+    // and the rest never contend. A 6000-char model name lands in the render
+    // event's message, so each render's own line exceeds max_size_bytes and
+    // every process both rotates and refills.
+    let fat_payload = format!(
+        r#"{{"model":{{"display_name":"{}"}},"workspace":{{"current_dir":"/tmp/demo"}},"session_id":"s1"}}"#,
+        "M".repeat(6000)
+    );
+
     let logs = home.path().join(".local").join("share").join("ferrisbar").join("logs");
     std::fs::create_dir_all(&logs).unwrap();
-    let log_file = logs.join("ferrisbar.jsonl");
-    std::fs::write(&log_file, format!("{}\n", "s".repeat(8192))).unwrap();
+    std::fs::write(logs.join("ferrisbar.jsonl"), format!("{}\n", "s".repeat(8192))).unwrap();
 
     let mut children = Vec::new();
     for _ in 0..12 {
@@ -2289,7 +2309,7 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
             .stdout(std::process::Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         use std::io::Write as _;
-        child.stdin.take().unwrap().write_all(PAYLOAD.as_bytes()).unwrap();
+        child.stdin.take().unwrap().write_all(fat_payload.as_bytes()).unwrap();
         children.push(child);
     }
     for child in children {
@@ -2309,12 +2329,18 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
                 .unwrap_or_else(|e| panic!("{} is corrupt: {e}", path.display()));
         }
     }
-    assert!(archives >= 1, "the pre-seeded oversized log must have rotated at least once");
+    assert!(
+        archives >= 2,
+        "expected multiple concurrent rotations, got {archives} archive(s) — \
+         if this is 1, the processes are not contending and the test is vacuous"
+    );
     assert!(!logs.join(".rotate.lock").exists(), "no lock may be left behind");
 }
 ```
 
 `flate2` is a runtime dependency, so integration tests can use it without a dev-dependency entry.
+
+**Validate the test before trusting it.** Temporarily change `acquire_lock` in `src/log.rs` to use `.create(true)` instead of `.create_new(true)` — removing the `O_EXCL` mutual exclusion — and run this test several times. It must fail. Revert the mutation afterward. A concurrency test that passes without the lock is testing nothing, which is exactly how the previous version of this test shipped.
 
 - [ ] **Step 5: Run the new tests**
 
