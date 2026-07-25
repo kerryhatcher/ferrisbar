@@ -14,7 +14,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn resolve_todos_dir() -> PathBuf {
-    config_dir::claude_config_dir().join("todos")
+    config_dir::claude_config_dir(None).join("todos")
 }
 
 fn main() {
@@ -22,14 +22,14 @@ fn main() {
     match args.as_slice() {
         [] => {}
         [cmd] if cmd == "setup" => {
-            if let Err(e) = setup::run(false) {
+            if let Err(e) = setup::run(false, &config::Config::default()) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
             return;
         }
         [cmd, flag] if cmd == "setup" && flag == "--project" => {
-            if let Err(e) = setup::run(true) {
+            if let Err(e) = setup::run(true, &config::Config::default()) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

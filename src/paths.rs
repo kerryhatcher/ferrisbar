@@ -59,8 +59,8 @@ pub fn resolve_data_dir(base: Option<&str>, xdg: Option<&str>) -> Option<PathBuf
     platform_dir(base, xdg, ".local/share")
 }
 
-// Public API consumed by task 5 logging setup.
-#[allow(dead_code)]
+// Public API consumed by task 5 logging setup, and now reachable from
+// setup::run's report.
 pub fn default_log_path(data_dir: &Path) -> PathBuf {
     data_dir.join("logs").join("ferrisbar.jsonl")
 }
@@ -82,8 +82,8 @@ fn base_vars() -> (Option<String>, Option<String>) {
 
 /// `<config dir>/config.toml`, or `None` when the platform base directory
 /// is unavailable.
-// Public API consumed by task 4 config loading.
-#[allow(dead_code)]
+// Public API consumed by task 4 config loading, and now reachable from
+// setup::run's report.
 pub fn config_file() -> Option<PathBuf> {
     let (config_base, _) = base_vars();
     resolve_config_dir(
@@ -94,8 +94,8 @@ pub fn config_file() -> Option<PathBuf> {
 }
 
 /// The data directory, or `None` when the platform base is unavailable.
-// Public API consumed by task 8 logging wire-up.
-#[allow(dead_code)]
+// Public API consumed by task 8 logging wire-up, and now reachable from
+// setup::run's report.
 pub fn data_dir() -> Option<PathBuf> {
     let (_, data_base) = base_vars();
     resolve_data_dir(data_base.as_deref(), env_opt("XDG_DATA_HOME").as_deref())
