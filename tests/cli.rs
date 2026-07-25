@@ -1,11 +1,29 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+/// Every `Command` in this file must come from here. Without the env
+/// overrides, running the suite writes into the developer's real
+/// ~/.config and ~/.local/share — and rotates and gzips their real log.
+///
+/// The returned `TempDir` must stay alive for the duration of the test; it
+/// deletes the directory tree on drop.
+fn isolated() -> (std::process::Command, tempfile::TempDir) {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+    cmd.env("HOME", home.path())
+        .env("APPDATA", home.path())
+        .env("LOCALAPPDATA", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    (cmd, home)
+}
 
 fn run_with_env(payload: &str, envs: &[(&str, &str)]) -> String {
-    let exe = env!("CARGO_BIN_EXE_ferrisbar");
-    let mut cmd = Command::new(exe);
+    let (mut cmd, _home) = isolated();
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
     for (k, v) in envs {
         cmd.env(k, v);
@@ -103,8 +121,7 @@ fn drains_large_stdin_payload() {
 }
 
 fn run_command(args: &[&str], envs: &[(&str, &str)], cwd: Option<&Path>) -> std::process::Output {
-    let exe = env!("CARGO_BIN_EXE_ferrisbar");
-    let mut cmd = Command::new(exe);
+    let (mut cmd, _home) = isolated();
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -191,8 +208,7 @@ fn setup_honors_claude_config_dir_over_home() {
 
 #[test]
 fn setup_fails_loudly_when_config_dir_unresolvable() {
-    let exe = env!("CARGO_BIN_EXE_ferrisbar");
-    let mut cmd = Command::new(exe);
+    let (mut cmd, _home) = isolated();
     cmd.args(["setup"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -205,4 +221,265 @@ fn setup_fails_loudly_when_config_dir_unresolvable() {
 
     assert!(!output.status.success());
     assert!(!output.stderr.is_empty());
+}
+
+fn run(cmd: &mut std::process::Command, stdin: &str) -> (String, bool) {
+    use std::io::Write as _;
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.success(),
+    )
+}
+
+const PAYLOAD: &str = r#"{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp/demo"},"session_id":"s1"}"#;
+
+#[test]
+fn a_normal_render_creates_the_config_file() {
+    let (mut cmd, home) = isolated();
+    let (stdout, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(stdout.contains("Claude"));
+    assert!(
+        home.path()
+            .join(".config")
+            .join("ferrisbar")
+            .join("config.toml")
+            .exists(),
+        "the config file is created on first run"
+    );
+}
+
+#[test]
+fn a_malformed_config_still_renders_and_is_left_untouched() {
+    let (mut cmd, home) = isolated();
+    let dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = "not = = toml";
+    std::fs::write(dir.join("config.toml"), original).unwrap();
+
+    let (stdout, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(
+        stdout.contains("Claude"),
+        "a broken config must not blank the statusline"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+        original
+    );
+
+    let log = home
+        .path()
+        .join(".local")
+        .join("share")
+        .join("ferrisbar")
+        .join("logs")
+        .join("ferrisbar.jsonl");
+    assert!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("config_parse_failed"),
+        "the failure is diagnosable"
+    );
+}
+
+#[test]
+fn stdout_is_identical_with_and_without_a_config_file() {
+    let (mut first, home_a) = isolated();
+    let (baseline, _) = run(&mut first, PAYLOAD);
+
+    // Second run: the config file now exists from the first run.
+    let mut second = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+    second
+        .env("HOME", home_a.path())
+        .env("APPDATA", home_a.path())
+        .env("LOCALAPPDATA", home_a.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    let (with_config, _) = run(&mut second, PAYLOAD);
+
+    assert_eq!(
+        baseline, with_config,
+        "config presence must not alter output"
+    );
+}
+
+#[test]
+fn logging_disabled_creates_no_log_directory() {
+    let (mut cmd, home) = isolated();
+    let dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.toml"), "[log]\nenabled = false\n").unwrap();
+
+    let (stdout, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(stdout.contains("Claude"));
+    assert!(!home
+        .path()
+        .join(".local")
+        .join("share")
+        .join("ferrisbar")
+        .join("logs")
+        .exists());
+}
+
+#[test]
+fn an_unresolvable_home_still_renders() {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+    cmd.env_remove("HOME")
+        .env_remove("APPDATA")
+        .env_remove("LOCALAPPDATA")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("CLAUDE_CONFIG_DIR");
+
+    let (stdout, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(stdout.contains("Claude"));
+}
+
+#[test]
+fn no_stray_directory_is_created_when_home_is_unset() {
+    let scratch = tempfile::tempdir().unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+    cmd.current_dir(scratch.path())
+        .env_remove("HOME")
+        .env_remove("APPDATA")
+        .env_remove("LOCALAPPDATA")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME");
+
+    let (_, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(
+        !scratch.path().join("ferrisbar").exists(),
+        "an empty HOME must never produce a relative path that lands in the user's repo"
+    );
+}
+
+#[test]
+fn env_var_beats_the_config_file_for_the_claude_dir() {
+    let (mut cmd, home) = isolated();
+    let dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        format!(
+            "[claude]\nconfig_dir = \"{}\"\n",
+            home.path().join("from-file").display()
+        ),
+    )
+    .unwrap();
+
+    // The env var points at a todos dir containing an active task; the
+    // file points somewhere empty. The task appearing proves env won.
+    let from_env = home.path().join("from-env");
+    std::fs::create_dir_all(from_env.join("todos")).unwrap();
+    std::fs::write(
+        from_env.join("todos").join("s1-agent-s1.json"),
+        r#"[{"content":"Ship it","status":"in_progress","activeForm":"Shipping it"}]"#,
+    )
+    .unwrap();
+    cmd.env("CLAUDE_CONFIG_DIR", &from_env);
+
+    let (stdout, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(
+        stdout.contains("Shipping it"),
+        "CLAUDE_CONFIG_DIR must still win"
+    );
+}
+
+#[test]
+fn concurrent_renders_never_produce_a_corrupt_archive() {
+    use std::io::{Read as _, Write as _};
+
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("ferrisbar");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "[log]\nlevel = \"debug\"\nmax_size_bytes = 4096\nmax_archives = 5\n",
+    )
+    .unwrap();
+
+    // Pre-seed the log past max_size_bytes so the very first render rotates.
+    // Without this the test passes trivially with zero archives.
+    let logs = home
+        .path()
+        .join(".local")
+        .join("share")
+        .join("ferrisbar")
+        .join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let log_file = logs.join("ferrisbar.jsonl");
+    std::fs::write(&log_file, format!("{}\n", "s".repeat(8192))).unwrap();
+
+    let mut children = Vec::new();
+    for _ in 0..12 {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+        cmd.env("HOME", home.path())
+            .env("APPDATA", home.path())
+            .env("LOCALAPPDATA", home.path())
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("FERRISBAR_LOG_PATH")
+            .env_remove("FERRISBAR_LOG_LEVEL")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(PAYLOAD.as_bytes())
+            .unwrap();
+        children.push(child);
+    }
+    for child in children {
+        // wait_with_output, not wait: the children have piped stdout, and
+        // waiting without draining the pipe can deadlock.
+        assert!(child.wait_with_output().unwrap().status.success());
+    }
+
+    let mut archives = 0;
+    for entry in std::fs::read_dir(&logs).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "gz") {
+            archives += 1;
+            let mut out = String::new();
+            flate2::read::GzDecoder::new(std::fs::File::open(&path).unwrap())
+                .read_to_string(&mut out)
+                .unwrap_or_else(|e| panic!("{} is corrupt: {e}", path.display()));
+        }
+    }
+    assert!(
+        archives >= 1,
+        "the pre-seeded oversized log must have rotated at least once"
+    );
+    assert!(
+        !logs.join(".rotate.lock").exists(),
+        "no lock may be left behind"
+    );
 }
