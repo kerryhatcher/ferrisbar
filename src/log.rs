@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)] // Level variants and methods used by Logger and tests
 pub enum Level {
     Off,
     Warn,
@@ -33,7 +32,6 @@ impl Level {
     }
 }
 
-#[allow(dead_code)] // constructed by warn() and debug()
 pub struct Event {
     pub level: Level,
     pub name: &'static str,
@@ -41,7 +39,7 @@ pub struct Event {
     pub msg: String,
 }
 
-#[allow(dead_code)] // used by tests for log events
+#[allow(dead_code)] // only called from tests; will be used by main.rs
 pub fn warn(name: &'static str, msg: impl Into<String>) -> Event {
     Event {
         level: Level::Warn,
@@ -51,7 +49,7 @@ pub fn warn(name: &'static str, msg: impl Into<String>) -> Event {
     }
 }
 
-#[allow(dead_code)] // used by tests for log events
+#[allow(dead_code)] // only called from tests; will be used by main.rs
 pub fn debug(name: &'static str, msg: impl Into<String>) -> Event {
     Event {
         level: Level::Debug,
@@ -62,7 +60,6 @@ pub fn debug(name: &'static str, msg: impl Into<String>) -> Event {
 }
 
 /// Timestamp is a parameter so serialization is testable without a clock.
-#[allow(dead_code)] // used by tests and Logger::append
 pub fn line_for(event: &Event, ts_millis: u128) -> String {
     let mut map = serde_json::Map::new();
     map.insert("ts".to_string(), serde_json::json!(ts_millis));
@@ -75,14 +72,13 @@ pub fn line_for(event: &Event, ts_millis: u128) -> String {
     serde_json::Value::Object(map).to_string()
 }
 
-#[allow(dead_code)] // called by Logger::append
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis())
 }
 
-#[allow(dead_code)] // Logger and all methods used by tests; will be used in Task 8
+#[allow(dead_code)] // fields max_size_bytes and max_archives are read by Task 6
 pub struct Logger {
     path: Option<PathBuf>,
     level: Level,
@@ -91,7 +87,7 @@ pub struct Logger {
 }
 
 impl Logger {
-    #[allow(dead_code)] // used by tests; will be used in Task 8
+    #[allow(dead_code)] // only called from tests; will be used by config_dir.rs/setup.rs in Task 7
     pub fn new(cfg: &Config, data_dir: Option<&Path>) -> Self {
         let level = Level::from_str_lenient(&cfg.log.level);
         let path = if cfg.log.enabled && level != Level::Off {
@@ -110,7 +106,7 @@ impl Logger {
     /// Never returns an error and never panics. Every failure — no data
     /// directory, unwritable path, full disk — silently disables this write
     /// so the statusline still renders.
-    #[allow(dead_code)] // used by tests; will be used in Task 8
+    #[allow(dead_code)] // only called from tests; will be used by main.rs in Task 8
     pub fn log(&self, event: &Event) {
         let Some(path) = &self.path else { return };
         if self.level == Level::Off || event.level > self.level {
@@ -133,7 +129,6 @@ impl Logger {
 /// relative path resolves against the data dir, never the process working
 /// directory — the cwd is whatever project Claude Code is running in, and
 /// resolving there would scatter log files across repositories.
-#[allow(dead_code)] // called by Logger::new
 fn resolve_log_path(configured: &str, data_dir: Option<&Path>) -> Option<PathBuf> {
     if configured.is_empty() {
         return data_dir.map(paths::default_log_path);
