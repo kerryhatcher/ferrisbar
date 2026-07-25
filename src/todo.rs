@@ -11,11 +11,21 @@ struct TodoItem {
     content: Option<String>,
 }
 
-pub fn active_task(session_id: &str, todos_dir: &Path) -> Option<String> {
+/// Returns the active task's display text, if any, alongside a diagnostic
+/// message for the caller to log.
+///
+/// The diagnostic is `Some` only when a todo file was matched for this
+/// session but could not be read or parsed — a genuine, once-per-fault
+/// condition. A missing `todos/` directory or no matching file is normal
+/// (no session has run yet, or none is in progress) and produces `(None,
+/// None)` silently.
+pub fn active_task(session_id: &str, todos_dir: &Path) -> (Option<String>, Option<String>) {
     if session_id.is_empty() {
-        return None;
+        return (None, None);
     }
-    let entries = fs::read_dir(todos_dir).ok()?;
+    let Ok(entries) = fs::read_dir(todos_dir) else {
+        return (None, None);
+    };
 
     let mut latest: Option<(SystemTime, PathBuf)> = None;
     for entry in entries.flatten() {
@@ -35,18 +45,41 @@ pub fn active_task(session_id: &str, todos_dir: &Path) -> Option<String> {
         }
     }
 
-    let (_, path) = latest?;
-    let content = fs::read_to_string(path).ok()?;
-    let todos: Vec<TodoItem> = serde_json::from_str(&content).ok()?;
-    let in_progress = todos
-        .into_iter()
-        .find(|t| t.status.as_deref() == Some("in_progress"))?;
+    let Some((_, path)) = latest else {
+        return (None, None);
+    };
 
-    in_progress
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) => {
+            return (
+                None,
+                Some(format!("could not read {}: {e}", path.display())),
+            )
+        }
+    };
+    let todos: Vec<TodoItem> = match serde_json::from_str(&content) {
+        Ok(todos) => todos,
+        Err(e) => {
+            return (
+                None,
+                Some(format!("could not parse {}: {e}", path.display())),
+            )
+        }
+    };
+    let Some(in_progress) = todos
+        .into_iter()
+        .find(|t| t.status.as_deref() == Some("in_progress"))
+    else {
+        return (None, None);
+    };
+
+    let task = in_progress
         .active_form
         .filter(|s| !s.is_empty())
         .or(in_progress.content)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+    (task, None)
 }
 
 #[cfg(test)]
@@ -68,20 +101,20 @@ mod tests {
     fn none_when_dir_missing() {
         let dir = tempdir().unwrap();
         let missing = dir.path().join("does-not-exist");
-        assert_eq!(active_task("abc", &missing), None);
+        assert_eq!(active_task("abc", &missing), (None, None));
     }
 
     #[test]
     fn none_when_session_id_empty() {
         let dir = tempdir().unwrap();
-        assert_eq!(active_task("", dir.path()), None);
+        assert_eq!(active_task("", dir.path()), (None, None));
     }
 
     #[test]
     fn none_when_no_matching_files() {
         let dir = tempdir().unwrap();
         write_todo_file(dir.path(), "other-session-agent-1.json", "[]", 1000);
-        assert_eq!(active_task("abc", dir.path()), None);
+        assert_eq!(active_task("abc", dir.path()), (None, None));
     }
 
     #[test]
@@ -93,7 +126,7 @@ mod tests {
             r#"[{"status":"in_progress","content":"x"}]"#,
             1000,
         );
-        assert_eq!(active_task("abc", dir.path()), None);
+        assert_eq!(active_task("abc", dir.path()), (None, None));
     }
 
     #[test]
@@ -111,7 +144,10 @@ mod tests {
             r#"[{"status":"in_progress","content":"new task"}]"#,
             2000,
         );
-        assert_eq!(active_task("abc", dir.path()), Some("new task".to_string()));
+        assert_eq!(
+            active_task("abc", dir.path()),
+            (Some("new task".to_string()), None)
+        );
     }
 
     #[test]
@@ -123,7 +159,7 @@ mod tests {
             r#"[{"status":"completed","content":"done"}]"#,
             1000,
         );
-        assert_eq!(active_task("abc", dir.path()), None);
+        assert_eq!(active_task("abc", dir.path()), (None, None));
     }
 
     #[test]
@@ -137,7 +173,7 @@ mod tests {
         );
         assert_eq!(
             active_task("abc", dir.path()),
-            Some("Doing thing".to_string())
+            (Some("Doing thing".to_string()), None)
         );
     }
 
@@ -150,14 +186,51 @@ mod tests {
             r#"[{"status":"in_progress","activeForm":"","content":"do thing"}]"#,
             1000,
         );
-        assert_eq!(active_task("abc", dir.path()), Some("do thing".to_string()));
+        assert_eq!(
+            active_task("abc", dir.path()),
+            (Some("do thing".to_string()), None)
+        );
     }
 
     #[test]
-    fn none_when_file_is_malformed_json() {
+    fn malformed_json_in_a_matched_file_produces_a_diagnostic() {
         let dir = tempdir().unwrap();
         write_todo_file(dir.path(), "abc-agent-1.json", "not json", 1000);
-        assert_eq!(active_task("abc", dir.path()), None);
+
+        let (task, diagnostic) = active_task("abc", dir.path());
+
+        assert_eq!(task, None);
+        assert!(
+            diagnostic.is_some(),
+            "a matched-but-malformed file is a genuine fault, not silence"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_matched_file_produces_a_diagnostic() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        write_todo_file(
+            dir.path(),
+            "abc-agent-1.json",
+            r#"[{"status":"in_progress","content":"x"}]"#,
+            1000,
+        );
+        let path = dir.path().join("abc-agent-1.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (task, diagnostic) = active_task("abc", dir.path());
+
+        // Restore so the tempdir can be cleaned up.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_eq!(task, None);
+        assert!(
+            diagnostic.is_some(),
+            "a matched file that cannot be read is a genuine fault, not silence"
+        );
     }
 
     #[test]
@@ -169,6 +242,6 @@ mod tests {
             r#"[{"status":"in_progress","content":"x"}]"#,
             1000,
         );
-        assert_eq!(active_task("abc", dir.path()), None);
+        assert_eq!(active_task("abc", dir.path()), (None, None));
     }
 }

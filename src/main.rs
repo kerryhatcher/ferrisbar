@@ -17,12 +17,14 @@ fn resolve_todos_dir(cfg: &config::Config) -> PathBuf {
     config_dir::claude_config_dir(Some(&cfg.claude.config_dir)).join("todos")
 }
 
-fn main() {
-    // Config and logging come up before anything else can fail, so the
-    // failures below are reportable.
-    let (mut cfg, warnings) = config::load(paths::config_file().as_deref());
-
-    // Environment beats file: applied before the logger reads the config.
+/// Environment beats file, applied before the logger reads the config.
+///
+/// An explicit, non-`"off"` `FERRISBAR_LOG_LEVEL` also forces
+/// `enabled = true`: it is the documented escape hatch for turning logging
+/// back on for one session without editing the file, and that must work
+/// even when the file says `enabled = false`. `FERRISBAR_LOG_LEVEL=off`
+/// still disables, via `Logger::new`'s existing `level != Off` check.
+fn apply_env_overrides(cfg: &mut config::Config) {
     if let Some(path) = env::var("FERRISBAR_LOG_PATH")
         .ok()
         .filter(|v| !v.is_empty())
@@ -33,11 +35,15 @@ fn main() {
         .ok()
         .filter(|v| !v.is_empty())
     {
+        if !level.trim().eq_ignore_ascii_case("off") {
+            cfg.log.enabled = true;
+        }
         cfg.log.level = level;
     }
+}
 
-    let logger = log::Logger::new(&cfg, paths::data_dir().as_deref());
-    for warning in &warnings {
+fn flush_config_warnings(logger: &log::Logger, warnings: &[config::ParseWarning]) {
+    for warning in warnings {
         match warning {
             config::ParseWarning::Syntax(msg) => {
                 logger.log(&log::warn("config_parse_failed", msg.clone()));
@@ -47,23 +53,29 @@ fn main() {
             }
         }
     }
+}
 
+/// Returns `true` when a subcommand consumed this invocation, meaning `main`
+/// should return without reading stdin. `setup` runs to completion (or
+/// exits the process on failure) before returning `true`; an unknown
+/// subcommand exits the process directly.
+fn dispatch_subcommand(cfg: &config::Config) -> bool {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
-        [] => {}
+        [] => false,
         [cmd] if cmd == "setup" => {
-            if let Err(e) = setup::run(false, &cfg) {
+            if let Err(e) = setup::run(false, cfg) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
-            return;
+            true
         }
         [cmd, flag] if cmd == "setup" && flag == "--project" => {
-            if let Err(e) = setup::run(true, &cfg) {
+            if let Err(e) = setup::run(true, cfg) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
-            return;
+            true
         }
         _ => {
             let program = env::args().next().unwrap_or_default();
@@ -74,6 +86,47 @@ fn main() {
             eprintln!("Usage: {program_name} [setup [--project]]");
             std::process::exit(1);
         }
+    }
+}
+
+/// Logs the one `debug`-level `render` event per invocation. `used_pct` is
+/// `None` when the payload carried no `context_window.remaining_percentage`,
+/// in which case the gauge itself is also omitted from the statusline.
+fn log_render_event(
+    logger: &log::Logger,
+    session_id: String,
+    model: &str,
+    dirname: &str,
+    acw: f64,
+    used_pct: Option<u8>,
+    elapsed: std::time::Duration,
+) {
+    let used_pct_str = used_pct.map_or_else(|| "none".to_string(), |v| v.to_string());
+    let elapsed_micros = elapsed.as_micros();
+    let mut render = log::debug(
+        "render",
+        format!(
+            "model={model} dir={dirname} acw={acw} used_pct={used_pct_str} \
+             elapsed_micros={elapsed_micros}"
+        ),
+    );
+    render.session_id = Some(session_id);
+    logger.log(&render);
+}
+
+fn main() {
+    let start = std::time::Instant::now();
+
+    // Config and logging come up before anything else can fail, so the
+    // failures below are reportable.
+    let (mut cfg, warnings) = config::load(paths::config_file().as_deref());
+    apply_env_overrides(&mut cfg);
+
+    let logger = log::Logger::new(&cfg, paths::data_dir().as_deref());
+    flush_config_warnings(&logger, &warnings);
+
+    if dispatch_subcommand(&cfg) {
+        return;
     }
 
     let mut input = String::new();
@@ -108,24 +161,12 @@ fn main() {
     let ctx = context_bar::render(payload.remaining_percentage(), payload.total_tokens(), acw);
 
     let todos_dir = resolve_todos_dir(&cfg);
-    // `active_task` returns None both for "no task in progress" and for
-    // "the directory isn't there", which are very different problems. The
-    // existence check separates them without changing todo.rs's signature.
-    //
-    // Gated on the parent existing: a Claude config dir that has no todos/
-    // is a genuine anomaly worth a warning, whereas no Claude dir at all
-    // means the resolved path is simply wrong, and warning on every render
-    // for a user who has never run Claude Code there would be pure churn.
-    let claude_dir_present = todos_dir.parent().is_some_and(Path::is_dir);
-    if !session_id.is_empty() && claude_dir_present && !todos_dir.is_dir() {
-        let mut event = log::warn(
-            "todo_file_unreadable",
-            format!("todos directory not found: {}", todos_dir.display()),
-        );
+    let (task, todo_diagnostic) = todo::active_task(&session_id, &todos_dir);
+    if let Some(msg) = todo_diagnostic {
+        let mut event = log::warn("todo_file_unreadable", msg);
         event.session_id = Some(session_id.clone());
         logger.log(&event);
     }
-    let task = todo::active_task(&session_id, &todos_dir);
 
     let dirname = Path::new(&cwd)
         .file_name()
@@ -133,9 +174,18 @@ fn main() {
 
     let output = layout::compose_statusline(&model, &ctx, task.as_deref(), &dirname);
 
-    let mut render = log::debug("render", format!("model={model} dir={dirname} acw={acw}"));
-    render.session_id = Some(session_id);
-    logger.log(&render);
+    let used_pct = payload
+        .remaining_percentage()
+        .map(|remaining| context_bar::compute_used(remaining, payload.total_tokens(), acw));
+    log_render_event(
+        &logger,
+        session_id,
+        &model,
+        &dirname,
+        acw,
+        used_pct,
+        start.elapsed(),
+    );
 
     print!("{output}");
 }
