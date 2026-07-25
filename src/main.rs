@@ -2,6 +2,7 @@ mod config;
 mod config_dir;
 mod context_bar;
 mod layout;
+mod log;
 mod paths;
 mod payload;
 mod setup;
