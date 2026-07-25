@@ -9,7 +9,6 @@ use std::path::Path;
 /// parse those keys, and emitting keys the binary ignores invites bug
 /// reports from users who set `bar_width` and see nothing change.
 // Used by Task 4 (file I/O) and tests; Task 3 only declares the constant.
-#[allow(dead_code)]
 pub const TEMPLATE: &str = r#"# ferrisbar configuration.  https://github.com/kerryhatcher/ferrisbar
 # Environment variables override anything set here.
 
@@ -32,9 +31,6 @@ pub const MAX_MAX_ARCHIVES: u8 = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseWarning {
     Syntax(String),
-    // Created by Task 4 (file I/O); constructed when path-related I/O fails.
-    // Won't be reached until Task 8 wires `load` into the main binary.
-    #[allow(dead_code)]
     Create(String),
 }
 
@@ -127,7 +123,6 @@ fn get_number(section: Option<&toml::Table>, key: &str) -> Option<f64> {
 /// siblings still apply. Returns at most one warning — a garbage file must
 /// not produce a burst of log lines on every render.
 // Used by Task 4 (file I/O) and tests; Task 3 only declares this public function.
-#[allow(dead_code)]
 pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
     let table = match input.parse::<toml::Table>() {
         Ok(table) => table,
@@ -179,7 +174,8 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
 /// let the statusline render. Warnings are returned as data rather than
 /// logged directly, because the config is what determines where the log
 /// lives — the caller flushes them once the logger exists.
-// Public API; wired into main by Task 8.
+// Public API; wired into main by Task 8. This allow becomes redundant once
+// load is called from main (everything it reaches becomes reachable).
 #[allow(dead_code)]
 pub fn load(path: Option<&Path>) -> (Config, Vec<ParseWarning>) {
     let Some(path) = path else {
@@ -199,8 +195,6 @@ pub fn load(path: Option<&Path>) -> (Config, Vec<ParseWarning>) {
     }
 }
 
-// Helper for `load`; not called until Task 8 wires load into main.
-#[allow(dead_code)]
 fn create_template(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
