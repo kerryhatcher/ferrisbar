@@ -22,11 +22,20 @@ max_archives   = 7         # keep .1.gz … .7.gz
 [claude]
 config_dir          = ""   # "" = $CLAUDE_CONFIG_DIR, else ~/.claude
 auto_compact_window = 0    # 0 = use the built-in 16.5% buffer
+
+[display]
+bar_width          = 10
+threshold_yellow   = 50
+threshold_orange   = 65
+threshold_critical = 80
+show_task          = true
 "#;
 
 pub const MIN_MAX_SIZE_BYTES: u64 = 4096;
 pub const MIN_MAX_ARCHIVES: u8 = 1;
 pub const MAX_MAX_ARCHIVES: u8 = 64;
+pub const MIN_BAR_WIDTH: u8 = 1;
+pub const MAX_BAR_WIDTH: u8 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseWarning {
@@ -49,10 +58,32 @@ pub struct ClaudeConfig {
     pub auto_compact_window: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayConfig {
+    pub bar_width: u8,
+    pub threshold_yellow: u8,
+    pub threshold_orange: u8,
+    pub threshold_critical: u8,
+    pub show_task: bool,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            bar_width: 10,
+            threshold_yellow: 50,
+            threshold_orange: 65,
+            threshold_critical: 80,
+            show_task: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub log: LogConfig,
     pub claude: ClaudeConfig,
+    pub display: DisplayConfig,
 }
 
 impl Default for LogConfig {
@@ -76,15 +107,16 @@ impl Default for ClaudeConfig {
     }
 }
 
-// Although Config could be derived Default (since LogConfig and ClaudeConfig have
-// Default impls), we keep the manual impl for consistency with the nested manual
-// Default implementations for LogConfig and ClaudeConfig.
+// Although Config could be derived Default (since LogConfig, ClaudeConfig, and
+// DisplayConfig have Default impls), we keep the manual impl for consistency
+// with the nested manual Default implementations.
 #[allow(clippy::derivable_impls)]
 impl Default for Config {
     fn default() -> Self {
         Self {
             log: LogConfig::default(),
             claude: ClaudeConfig::default(),
+            display: DisplayConfig::default(),
         }
     }
 }
@@ -162,6 +194,56 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
             auto_compact_window: get_number(claude, "auto_compact_window")
                 .unwrap_or(defaults.claude.auto_compact_window),
         },
+        display: {
+            let display = section(&table, "display");
+            let defaults_display = DisplayConfig::default();
+
+            let bar_width = get_integer(display, "bar_width")
+                .and_then(|v| u8::try_from(v).ok())
+                .map_or(defaults_display.bar_width, |v| {
+                    v.clamp(MIN_BAR_WIDTH, MAX_BAR_WIDTH)
+                });
+
+            let threshold_yellow = get_integer(display, "threshold_yellow")
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(defaults_display.threshold_yellow);
+
+            let threshold_orange = get_integer(display, "threshold_orange")
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(defaults_display.threshold_orange);
+
+            let threshold_critical = get_integer(display, "threshold_critical")
+                .and_then(|v| u8::try_from(v).ok())
+                .unwrap_or(defaults_display.threshold_critical);
+
+            // Thresholds must be monotonically increasing. When they are
+            // not, all three fall back to defaults — a single out-of-order
+            // value is a configuration error, not a reason to guess which
+            // one the user meant.
+            let (threshold_yellow, threshold_orange, threshold_critical) =
+                if threshold_yellow < threshold_orange
+                    && threshold_orange < threshold_critical
+                {
+                    (threshold_yellow, threshold_orange, threshold_critical)
+                } else {
+                    (
+                        defaults_display.threshold_yellow,
+                        defaults_display.threshold_orange,
+                        defaults_display.threshold_critical,
+                    )
+                };
+
+            let show_task =
+                get_bool(display, "show_task").unwrap_or(defaults_display.show_task);
+
+            DisplayConfig {
+                bar_width,
+                threshold_yellow,
+                threshold_orange,
+                threshold_critical,
+                show_task,
+            }
+        },
     };
 
     (config, Vec::new())
@@ -224,9 +306,11 @@ mod tests {
     }
 
     #[test]
-    fn template_does_not_mention_display() {
-        assert!(!TEMPLATE.contains("[display]"));
-        assert!(!TEMPLATE.contains("bar_width"));
+    fn template_includes_display_block() {
+        assert!(TEMPLATE.contains("[display]"));
+        assert!(TEMPLATE.contains("bar_width"));
+        assert!(TEMPLATE.contains("threshold_yellow"));
+        assert!(TEMPLATE.contains("show_task"));
     }
 
     #[test]
@@ -359,5 +443,88 @@ mod tests {
             original,
             "a malformed config is never overwritten — the user's edits are theirs"
         );
+    }
+
+    #[test]
+    fn display_defaults_match_the_documented_values() {
+        let d = DisplayConfig::default();
+        assert_eq!(d.bar_width, 10);
+        assert_eq!(d.threshold_yellow, 50);
+        assert_eq!(d.threshold_orange, 65);
+        assert_eq!(d.threshold_critical, 80);
+        assert!(d.show_task);
+    }
+
+    #[test]
+    fn display_values_are_read_from_toml() {
+        let (c, _) = from_toml_str(
+            "[display]\nbar_width = 20\nthreshold_yellow = 40\n\
+             threshold_orange = 60\nthreshold_critical = 90\nshow_task = false\n",
+        );
+        assert_eq!(c.display.bar_width, 20);
+        assert_eq!(c.display.threshold_yellow, 40);
+        assert_eq!(c.display.threshold_orange, 60);
+        assert_eq!(c.display.threshold_critical, 90);
+        assert!(!c.display.show_task);
+    }
+
+    #[test]
+    fn bar_width_clamps_to_range() {
+        let (zero, _) = from_toml_str("[display]\nbar_width = 0\n");
+        assert_eq!(zero.display.bar_width, MIN_BAR_WIDTH);
+        let (huge, _) = from_toml_str("[display]\nbar_width = 200\n");
+        assert_eq!(huge.display.bar_width, MAX_BAR_WIDTH);
+    }
+
+    #[test]
+    fn bar_width_negative_falls_back() {
+        let (c, _) = from_toml_str("[display]\nbar_width = -5\n");
+        assert_eq!(c.display.bar_width, DisplayConfig::default().bar_width);
+    }
+
+    #[test]
+    fn out_of_order_thresholds_fall_back_to_defaults() {
+        let (c, _) = from_toml_str(
+            "[display]\nthreshold_yellow = 80\nthreshold_orange = 50\nthreshold_critical = 90\n",
+        );
+        // yellow >= orange, so all three fall back.
+        assert_eq!(c.display.threshold_yellow, 50);
+        assert_eq!(c.display.threshold_orange, 65);
+        assert_eq!(c.display.threshold_critical, 80);
+    }
+
+    #[test]
+    fn equal_thresholds_fall_back() {
+        let (c, _) = from_toml_str(
+            "[display]\nthreshold_yellow = 50\nthreshold_orange = 50\nthreshold_critical = 80\n",
+        );
+        assert_eq!(c.display.threshold_yellow, 50);
+        assert_eq!(c.display.threshold_orange, 65);
+        assert_eq!(c.display.threshold_critical, 80);
+    }
+
+    #[test]
+    fn critical_below_orange_falls_back() {
+        let (c, _) = from_toml_str(
+            "[display]\nthreshold_yellow = 30\nthreshold_orange = 60\nthreshold_critical = 40\n",
+        );
+        assert_eq!(c.display.threshold_yellow, 50);
+        assert_eq!(c.display.threshold_orange, 65);
+        assert_eq!(c.display.threshold_critical, 80);
+    }
+
+    #[test]
+    fn partial_display_block_fills_in_defaults() {
+        let (c, _) = from_toml_str("[display]\nbar_width = 5\n");
+        assert_eq!(c.display.bar_width, 5);
+        assert_eq!(c.display.threshold_yellow, 50);
+        assert!(c.display.show_task);
+    }
+
+    #[test]
+    fn template_round_trips_including_display() {
+        let (c, warnings) = from_toml_str(TEMPLATE);
+        assert!(warnings.is_empty());
+        assert_eq!(c, Config::default());
     }
 }
