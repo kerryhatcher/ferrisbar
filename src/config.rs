@@ -23,23 +23,15 @@ config_dir          = ""   # "" = $CLAUDE_CONFIG_DIR, else ~/.claude
 auto_compact_window = 0    # 0 = use the built-in 16.5% buffer
 "#;
 
-// Used by Task 4 and tests; Task 3 only declares these constants.
-#[allow(dead_code)]
 pub const MIN_MAX_SIZE_BYTES: u64 = 4096;
-#[allow(dead_code)]
 pub const MIN_MAX_ARCHIVES: u8 = 1;
-#[allow(dead_code)]
 pub const MAX_MAX_ARCHIVES: u8 = 64;
 
-// Used by Task 4 and tests; Task 3 only declares this enum.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseWarning {
     Syntax(String),
 }
 
-// Used by Task 4 and tests; Task 3 only declares this struct.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogConfig {
     pub enabled: bool,
@@ -49,16 +41,12 @@ pub struct LogConfig {
     pub max_archives: u8,
 }
 
-// Used by Task 4 and tests; Task 3 only declares this struct.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeConfig {
     pub config_dir: String,
     pub auto_compact_window: f64,
 }
 
-// Used by Task 4 and tests; Task 3 only declares this struct.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub log: LogConfig,
