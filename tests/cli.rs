@@ -3,22 +3,53 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
-/// Every `Command` in this file must come from here. Without the env
-/// overrides, running the suite writes into the developer's real
-/// ~/.config and ~/.local/share — and rotates and gzips their real log.
+/// Env vars whose presence in the developer's real shell could route a
+/// spawned child into real state instead of a tempdir. `FERRISBAR_LOG_PATH`
+/// and `FERRISBAR_LOG_LEVEL` beat the config file outright (`src/main.rs`),
+/// so an exported one of these would send the suite's logging to a real
+/// path, or suppress the warn record some tests assert on.
 ///
-/// The returned `TempDir` must stay alive for the duration of the test; it
-/// deletes the directory tree on drop.
+/// This is the single source of truth for that list — do not inline a
+/// second copy of it, since a second copy is exactly what drifted before
+/// (the concurrency test and `stdout_is_identical_with_and_without_a_config_file`
+/// each grew their own, slightly different, set of removals).
+const OVERRIDABLE_ENV_VARS: &[&str] = &[
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    "FERRISBAR_LOG_PATH",
+    "FERRISBAR_LOG_LEVEL",
+];
+
+/// A `Command` rooted at `home` for `HOME`/`APPDATA`/`LOCALAPPDATA`, with
+/// every var in `OVERRIDABLE_ENV_VARS` removed. Used by `isolated()` and by
+/// the handful of tests that need a second (or Nth) process sharing an
+/// already-created home directory.
+fn command_with_home(home: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
+    cmd.env("HOME", home)
+        .env("APPDATA", home)
+        .env("LOCALAPPDATA", home);
+    for var in OVERRIDABLE_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+/// Most tests in this file should get their `Command` from here. The
+/// exceptions are tests that deliberately construct their own `Command`
+/// because they need an env shape this helper cannot produce — most often,
+/// an unresolvable `HOME` (see `an_unresolvable_home_still_renders` and
+/// `no_stray_directory_is_created_when_home_is_unset`). Those tests must
+/// still remove every var in `OVERRIDABLE_ENV_VARS` themselves.
+///
+/// The returned `TempDir` must be bound to a named variable (`_home`, not
+/// bare `_`) for the duration of the test; bare `_` drops it immediately,
+/// deleting the directory before the child process runs.
 fn isolated() -> (std::process::Command, tempfile::TempDir) {
     let home = tempfile::tempdir().unwrap();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
-    cmd.env("HOME", home.path())
-        .env("APPDATA", home.path())
-        .env("LOCALAPPDATA", home.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_DATA_HOME")
-        .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    let cmd = command_with_home(home.path());
     (cmd, home)
 }
 
@@ -303,15 +334,7 @@ fn stdout_is_identical_with_and_without_a_config_file() {
     let (baseline, _) = run(&mut first, PAYLOAD);
 
     // Second run: the config file now exists from the first run.
-    let mut second = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
-    second
-        .env("HOME", home_a.path())
-        .env("APPDATA", home_a.path())
-        .env("LOCALAPPDATA", home_a.path())
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_DATA_HOME")
-        .env_remove("CLAUDE_CONFIG_DIR")
-        .env_remove("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+    let mut second = command_with_home(home_a.path());
     let (with_config, _) = run(&mut second, PAYLOAD);
 
     assert_eq!(
@@ -340,15 +363,23 @@ fn logging_disabled_creates_no_log_directory() {
         .exists());
 }
 
-#[test]
-fn an_unresolvable_home_still_renders() {
+/// A `Command` with `HOME`/`APPDATA`/`LOCALAPPDATA` and every var in
+/// `OVERRIDABLE_ENV_VARS` removed — the opposite of `command_with_home`,
+/// for the tests that deliberately exercise an unresolvable base directory.
+fn command_without_home() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
     cmd.env_remove("HOME")
         .env_remove("APPDATA")
-        .env_remove("LOCALAPPDATA")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_DATA_HOME")
-        .env_remove("CLAUDE_CONFIG_DIR");
+        .env_remove("LOCALAPPDATA");
+    for var in OVERRIDABLE_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+#[test]
+fn an_unresolvable_home_still_renders() {
+    let mut cmd = command_without_home();
 
     let (stdout, ok) = run(&mut cmd, PAYLOAD);
 
@@ -359,13 +390,8 @@ fn an_unresolvable_home_still_renders() {
 #[test]
 fn no_stray_directory_is_created_when_home_is_unset() {
     let scratch = tempfile::tempdir().unwrap();
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
-    cmd.current_dir(scratch.path())
-        .env_remove("HOME")
-        .env_remove("APPDATA")
-        .env_remove("LOCALAPPDATA")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_DATA_HOME");
+    let mut cmd = command_without_home();
+    cmd.current_dir(scratch.path());
 
     let (_, ok) = run(&mut cmd, PAYLOAD);
 
@@ -435,25 +461,30 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
     let log_file = logs.join("ferrisbar.jsonl");
     std::fs::write(&log_file, format!("{}\n", "s".repeat(8192))).unwrap();
 
+    // A model name long enough that the "render" debug line it produces
+    // (which embeds `model={name}`) alone exceeds max_size_bytes. With a
+    // short payload only the first process ever rotates (it consumes the
+    // pre-seed; the other eleven see a small, freshly-rotated file and
+    // never attempt rotation), so `archives` is trivially 1 and the lock
+    // sees no real contention. The fat payload makes every rotation
+    // re-oversize the log file it recreates, producing several genuine
+    // rotation episodes across the 12 processes.
+    let fat_payload = format!(
+        r#"{{"model":{{"display_name":"{}"}},"workspace":{{"current_dir":"/tmp/demo"}},"session_id":"s1"}}"#,
+        "M".repeat(6000)
+    );
+
     let mut children = Vec::new();
     for _ in 0..12 {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
-        cmd.env("HOME", home.path())
-            .env("APPDATA", home.path())
-            .env("LOCALAPPDATA", home.path())
-            .env_remove("XDG_CONFIG_HOME")
-            .env_remove("XDG_DATA_HOME")
-            .env_remove("CLAUDE_CONFIG_DIR")
-            .env_remove("FERRISBAR_LOG_PATH")
-            .env_remove("FERRISBAR_LOG_LEVEL")
-            .stdin(std::process::Stdio::piped())
+        let mut cmd = command_with_home(home.path());
+        cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         child
             .stdin
             .take()
             .unwrap()
-            .write_all(PAYLOAD.as_bytes())
+            .write_all(fat_payload.as_bytes())
             .unwrap();
         children.push(child);
     }
@@ -475,8 +506,9 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
         }
     }
     assert!(
-        archives >= 1,
-        "the pre-seeded oversized log must have rotated at least once"
+        archives >= 2,
+        "expected multiple concurrent rotations, got {archives} archive(s) — \
+         if this is 1, the processes are not contending and the test is vacuous"
     );
     assert!(
         !logs.join(".rotate.lock").exists(),
