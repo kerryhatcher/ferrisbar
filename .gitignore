@@ -22,3 +22,7 @@ target
 
 # Superpowers subagent-driven-development scratch workspace
 .superpowers/
+
+# Personal Claude Code settings. `.claude/settings.json` IS committed (it holds
+# the shared format-on-edit hook); this one stays local.
+.claude/settings.local.json

@@ -4,6 +4,10 @@
 fmt:
     cargo fmt --check
 
+# Reformat in place. `fmt` only verifies; this is the one that writes.
+fmt-fix:
+    cargo fmt
+
 # Lint, treating warnings as errors.
 lint:
     cargo clippy --all-targets -- -D warnings
