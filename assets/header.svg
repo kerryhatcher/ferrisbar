@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="ferrisbar — a Claude Code statusline renderer, written in Rust">
+  <title>ferrisbar — a Claude Code statusline renderer, written in Rust</title>
+  <defs>
+    <linearGradient id="h-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFBF5"/>
+      <stop offset="1" stop-color="#FFF1E0"/>
+    </linearGradient>
+    <linearGradient id="h-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF8A3D"/>
+      <stop offset="1" stop-color="#E05D28"/>
+    </linearGradient>
+    <linearGradient id="h-bar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FF9F5A"/>
+      <stop offset="1" stop-color="#E05D28"/>
+    </linearGradient>
+    <radialGradient id="h-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#E05D28" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#E05D28" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#h-bg)"/>
+  <rect width="1200" height="300" fill="url(#h-glow)"/>
+  <rect y="296" width="1200" height="4" fill="url(#h-bar)"/>
+
+  <!-- mark -->
+  <g>
+    <rect x="556" y="34" width="88" height="88" rx="22" fill="url(#h-tile)"/>
+    <path d="M578 61 L595 78 L578 95" fill="none" stroke="#FFF7ED" stroke-width="8"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="605" y="70" width="9" height="15" rx="3.5" fill="#FFF7ED"/>
+    <rect x="620" y="70" width="9" height="15" rx="3.5" fill="#FFF7ED" opacity="0.55"/>
+  </g>
+
+  <text x="600" y="192" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="68" font-weight="700" fill="#E05D28" letter-spacing="-1">ferris<tspan fill="#57534E">bar</tspan></text>
+
+  <text x="600" y="230" text-anchor="middle" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="20" fill="#78716C">A Claude Code statusline renderer, written in Rust</text>
+
+  <!-- decorative context bar -->
+  <g>
+    <rect x="423" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="459" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="495" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="531" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="567" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="603" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="639" y="256" width="30" height="12" rx="3" fill="url(#h-bar)"/>
+    <rect x="675" y="256" width="30" height="12" rx="3" fill="#E05D28" opacity="0.18"/>
+    <rect x="711" y="256" width="30" height="12" rx="3" fill="#E05D28" opacity="0.18"/>
+    <rect x="747" y="256" width="30" height="12" rx="3" fill="#E05D28" opacity="0.18"/>
+  </g>
+</svg>

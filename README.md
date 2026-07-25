@@ -1,15 +1,127 @@
-# ferrisbar
-A Claude Code statusline renderer, written in Rust.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/header-dark.svg">
+    <img src="assets/header.svg" width="720" alt="ferrisbar — a Claude Code statusline renderer, written in Rust">
+  </picture>
+</p>
 
-## Install
+<p align="center">
+  <a href="https://github.com/kerryhatcher/ferrisbar/actions/workflows/ci.yml"><img src="https://github.com/kerryhatcher/ferrisbar/actions/workflows/ci.yml/badge.svg" alt="CI build status"></a>
+  <a href="https://crates.io/crates/ferrisbar"><img src="https://img.shields.io/crates/v/ferrisbar?color=E05D28" alt="Latest version on crates.io"></a>
+  <a href="#-license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-E05D28" alt="License: MIT OR Apache-2.0"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.85.1%2B-E05D28?logo=rust&logoColor=white" alt="Minimum supported Rust version 1.85.1"></a>
+  <a href="https://github.com/kerryhatcher/ferrisbar/issues"><img src="https://img.shields.io/github/issues/kerryhatcher/ferrisbar?color=E05D28" alt="Open issues"></a>
+</p>
+
+**ferrisbar** renders the [Claude Code](https://claude.com/claude-code)
+statusline — your model, the task you are on *right now*, the directory, and a
+context-window gauge that runs green → yellow → orange → blinking red before
+auto-compaction hits.
+
+<p align="center">
+    <img src="assets/demo.svg" width="880" alt="Terminal showing the ferrisbar statusline at four context levels: green and empty at 0%, yellow and half full at 50%, orange at 70%, and blinking red with a skull at 85%">
+</p>
+
+## ✨ Features
+
+- **📊 A context gauge that means something** — the bar reports how much of
+  your *usable* window is gone, not the raw token count.
+  [Here is why those differ](#-why-ferrisbar).
+- **🎯 Shows your current task** — reads the
+  [task list](https://docs.claude.com/en/docs/claude-code/overview) Claude Code
+  maintains while it works and surfaces the one item marked `in_progress`, so
+  the line says what the agent is *doing*, not just where it is.
+- **🚦 Escalating urgency** — [green](#-configuration) under 50%, yellow to
+  65%, orange to 80%, then a blinking red bar with a 💀 so you notice before
+  you get compacted.
+- **⚡ Fast and dependency-light** — one [Rust](https://www.rust-lang.org)
+  binary and two runtime crates ([serde](https://serde.rs) and
+  [serde_json](https://docs.rs/serde_json)). No interpreter to start on every
+  single prompt render.
+- **🔧 One-command wiring** — [`ferrisbar setup`](#wiring-it-into-claude-code)
+  edits your settings in place and preserves every other key.
+- **🛡️ Never breaks your prompt** — malformed, partial, or absent input
+  [degrades to a shorter line](#-reference-the-input-contract) instead of an
+  error.
+
+## 🚀 Quick Start
+
+```bash
+cargo install ferrisbar
+ferrisbar setup
+```
+
+Start a new [Claude Code](https://claude.com/claude-code) session and the
+statusline is live. Claude Code reads `statusLine` once at session start, so an
+already-running session will not pick it up.
+
+## 📖 Contents
+
+- [Why ferrisbar](#-why-ferrisbar)
+- [Installation](#-installation)
+- [Usage](#-usage)
+- [Configuration](#-configuration)
+- [Reference: the input contract](#-reference-the-input-contract)
+- [Contributing](#-contributing)
+- [Getting help](#-getting-help)
+- [License](#-license)
+- [Acknowledgements](#-acknowledgements)
+
+## 🤔 Why ferrisbar
+
+**The number Claude Code hands you is not the number you care about.** The
+payload reports `remaining_percentage` against the *whole* context window, but
+you never get to spend the whole window — [auto-compaction][compact] fires
+while a buffer is still unused. A raw "42% left" reading is quietly
+optimistic, and it is optimistic by a different amount on every model.
+
+ferrisbar rescales against the space you can actually spend. It subtracts the
+auto-compaction buffer (16.5% by default, or exactly what you tell it via
+[`CLAUDE_CODE_AUTO_COMPACT_WINDOW`](#-configuration)) and reports the rest, so
+`100%` means *"you are at the compaction floor"* rather than *"the window is
+literally empty."* When the bar goes red you have a few messages left to land
+the plane — not zero.
+
+The rest follows from wanting that on screen during every single render:
+
+|                    | Shell-script statusline | ferrisbar                |
+| ------------------ | ----------------------- | ------------------------ |
+| Cost per render    | fork + interpreter      | one static binary        |
+| Bad/partial JSON   | usually a stack trace   | degrades to a short line |
+| Current task shown | rarely                  | yes, from Claude's tasks |
+| Runtime deps       | [jq], python, bash…     | none                     |
+
+[compact]: https://docs.claude.com/en/docs/claude-code/costs
+[jq]: https://jqlang.github.io/jq/
+
+## 📦 Installation
+
+Every route needs a Rust toolchain, and ferrisbar builds on **Rust 1.85.1 or
+newer** — a floor that CI re-verifies with cargo-msrv on every commit, so a
+stale toolchain fails loudly rather than mysteriously. The usual way, which
+drops the binary at `~/.cargo/bin/ferrisbar`:
 
 ```bash
 cargo install ferrisbar
 ```
 
-This installs the binary to `~/.cargo/bin/ferrisbar`.
+No `cargo` yet? [rustup](https://rustup.rs) sets up the whole toolchain in one
+step, and the [CI workflow](.github/workflows/ci.yml) shows exactly which
+versions are exercised.
 
-### Building from source instead
+<details>
+<summary><b>Other installation routes</b></summary>
+
+<br>
+
+**Straight from `main`**, if you want changes before they are released:
+
+```bash
+cargo install --git https://github.com/kerryhatcher/ferrisbar
+```
+
+**From a local clone**, which is also what you want for
+[hacking on it](CONTRIBUTING.md):
 
 ```bash
 git clone https://github.com/kerryhatcher/ferrisbar.git
@@ -17,31 +129,186 @@ cd ferrisbar
 cargo install --path .
 ```
 
-## Wiring into Claude Code
-
-Prerequisite: a working Rust toolchain (`cargo`/`rustc`) is required either way.
-
-After installing, verify the binary works before wiring it up:
+**Pinned to an exact version**, using any tag from
+[the releases page](https://github.com/kerryhatcher/ferrisbar/releases):
 
 ```bash
-echo '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"}}' | ferrisbar
+cargo install ferrisbar --version 0.2.0
 ```
 
-This should print a statusline like `Claude │ tmp` (dimmed), reflecting the
-model name and directory from the JSON payload. Claude Code sends a much
-richer payload at runtime (context window usage, session id, etc.) — see
-this repo's `docs/superpowers/specs/` for the full input/output contract.
+Prebuilt binaries for Linux, macOS, and Windows are attached to
+[every release](https://github.com/kerryhatcher/ferrisbar/releases/latest) if
+you would rather not compile anything.
 
-Set the `statusLine` command automatically:
+</details>
+
+Verify the binary before wiring it into anything:
 
 ```bash
-ferrisbar setup
+echo '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"}}' \
+  | ferrisbar
 ```
 
-This updates `~/.claude/settings.json` (preserving every other setting) to
-point `statusLine.command` at this binary's installed location. Use
-`ferrisbar setup --project` instead to write `.claude/settings.local.json`
-in the current project directory rather than your user-level settings.
+That prints `Claude │ tmp`, dimmed. Claude Code sends a far richer payload at
+runtime — see [the input contract](#-reference-the-input-contract).
 
-Claude Code reads the statusLine config once at session start, so start a new
-session after changing it.
+## 🛠 Usage
+
+ferrisbar has exactly two modes: wire itself up, or render a line.
+
+### Wiring it into Claude Code
+
+```bash
+ferrisbar setup             # writes ~/.claude/settings.json
+ferrisbar setup --project   # writes ./.claude/settings.local.json
+```
+
+Either command points `statusLine.command` at the binary's absolute path and
+rewrites nothing else — every other key in the file survives, and the file is
+created if it does not exist. Use `--project` to enable ferrisbar in one
+repository without touching your user-level
+[settings](https://docs.claude.com/en/docs/claude-code/settings).
+
+Prefer to edit the settings yourself? It is one key:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/home/you/.cargo/bin/ferrisbar"
+  }
+}
+```
+
+### Rendering a line
+
+With no arguments, ferrisbar reads one [JSON](https://www.json.org) payload on
+stdin and writes one statusline to stdout. That is the entire contract, which
+makes it easy to inspect by hand:
+
+```bash
+echo '{
+  "model": {"display_name": "Opus 5"},
+  "workspace": {"current_dir": "/home/you/projects/ferrisbar"},
+  "session_id": "abc123",
+  "context_window": {"remaining_percentage": 41.55, "total_tokens": 1000000}
+}' | ferrisbar
+```
+
+Segments appear in this order, and each one disappears when it has nothing to
+say:
+
+```text
+Opus 5 │ Wiring up the release pipeline │ ferrisbar │ ███████░░░ 70%
+  ↑                    ↑                      ↑              ↑
+model            active task              directory     context gauge
+```
+
+## 🧰 Configuration
+
+There is no config file. Two [environment
+variables](https://en.wikipedia.org/wiki/Environment_variable) cover the cases
+where the defaults are wrong:
+
+| Variable | Default | What it does |
+| -------- | ------- | ------------ |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Where Claude Code keeps its per-session task files, which is how the active task is found. Set it if your config lives elsewhere. |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | unset → a 16.5% buffer | Token count at which [auto-compaction][compact] fires. Set it to calibrate the gauge exactly instead of trusting the default buffer. |
+
+The gauge's thresholds are fixed, and map to how much of your *usable* window
+is spent:
+
+| Used | Color | Extra |
+| ---- | ----- | ----- |
+| 0–49% | green | — |
+| 50–64% | yellow | — |
+| 65–79% | orange | — |
+| 80–100% | red | blinking, prefixed with 💀 |
+
+Colors are plain [ANSI SGR](https://en.wikipedia.org/wiki/ANSI_escape_code)
+codes, so your terminal theme decides the exact shades.
+
+## 🧾 Reference: the input contract
+
+Claude Code invokes the `statusLine` command once per render, writes a JSON
+object to its stdin, and prints whatever comes back on stdout. The
+[design notes](docs/superpowers/specs/) in this repository record the full
+contract and the reasoning behind it.
+
+<details>
+<summary><b>Fields ferrisbar reads (everything else is ignored)</b></summary>
+
+<br>
+
+| Field | Type | Used for |
+| ----- | ---- | -------- |
+| `model.display_name` | string | The model segment. Falls back to `Claude`. |
+| `workspace.current_dir` | string | The directory segment, basename only. Falls back to the process working directory. |
+| `session_id` | string | Locating the per-session task file under `$CLAUDE_CONFIG_DIR`, to find the active task. |
+| `context_window.remaining_percentage` | number | The gauge. Omit it and the gauge is omitted. |
+| `context_window.total_tokens` | number | Turning `CLAUDE_CODE_AUTO_COMPACT_WINDOW` into a percentage. |
+
+Every field is optional, and every field is parsed leniently by
+[serde](https://serde.rs): a value of the wrong type is treated as absent
+rather than failing the whole document, so an upstream schema change costs you
+one segment instead of your statusline. If stdin is not valid JSON at all,
+ferrisbar prints nothing and exits `0`.
+
+</details>
+
+## 🤝 Contributing
+
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the full
+setup, but the short version is that [`just`](https://github.com/casey/just)
+runs locally exactly what
+[CI](https://github.com/kerryhatcher/ferrisbar/actions) runs:
+
+```bash
+just ci     # fmt, clippy, tests, audit, msrv, deny, trivy, vet, geiger
+cargo test  # just the 62-test suite, if that is all you need
+```
+
+Every commit follows [Conventional Commits](https://www.conventionalcommits.org)
+so that [release-please](https://github.com/googleapis/release-please) can cut
+releases on its own. Participation is governed by our
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## 💬 Getting help
+
+- **Something is broken** — open an
+  [issue](https://github.com/kerryhatcher/ferrisbar/issues/new).
+- **A question, or an idea you want to talk through** —
+  [Discussions](https://github.com/kerryhatcher/ferrisbar/discussions) is the
+  low-stakes place for it.
+- **You found a security problem** — please do *not* open a public issue.
+  [SECURITY.md](SECURITY.md) has the private reporting path.
+- **You want to see what is in flight** — the
+  [open pull requests](https://github.com/kerryhatcher/ferrisbar/pulls) and the
+  [changelog](https://github.com/kerryhatcher/ferrisbar/releases) are the
+  fastest read.
+
+## 📄 License
+
+Dual-licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT license](LICENSE-MIT)
+
+at your option — the [standard arrangement](https://rust-lang.github.io/api-guidelines/necessities.html)
+in the Rust ecosystem. Unless you state otherwise, any contribution you
+intentionally submit for inclusion in this work shall be dual-licensed as
+above, with no additional terms.
+
+## 🙏 Acknowledgements
+
+- [Claude Code](https://claude.com/claude-code), for shipping a statusline hook
+  simple enough that a thousand-line binary is a complete implementation of it.
+- [serde](https://serde.rs) and
+  [serde_json](https://github.com/serde-rs/json), which are the entire runtime
+  dependency tree.
+- [release-please](https://github.com/googleapis/release-please),
+  [cargo-deny](https://github.com/EmbarkStudios/cargo-deny),
+  [cargo-vet](https://github.com/mozilla/cargo-vet), and
+  [cargo-audit](https://github.com/rustsec/rustsec), which between them make a
+  one-person project's release pipeline boring.
+- [Ferris](https://rustacean.net), the Rust community's crab, for the name.
