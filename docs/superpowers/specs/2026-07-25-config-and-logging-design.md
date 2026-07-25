@@ -36,12 +36,14 @@ variables, the config file, and built-in defaults.
 | Config scope | Logging keys + adopt existing env vars + display options |
 | Structure | One spec, two implementation PRs |
 | macOS paths | Apple conventions (`~/Library/Application Support`) |
+| Windows paths | Native (`%APPDATA%` / `%LOCALAPPDATA%`) — CI and releases both target it |
 
 ## Scope
 
 ### Phase 1 (first PR)
 
-- Platform directory resolution (`src/paths.rs`)
+- Platform directory resolution for Linux, macOS, and Windows
+  (`src/paths.rs`)
 - TOML config load/create/clamp (`src/config.rs`), including the
   `[display]` schema being *specified* but not emitted or parsed
 - JSONL logging with rotation and gzip archives (`src/log.rs`)
@@ -65,16 +67,35 @@ variables, the config file, and built-in defaults.
 
 ## Paths
 
-| | Linux | macOS |
-|---|---|---|
-| Config dir | `$XDG_CONFIG_HOME/ferrisbar/` else `~/.config/ferrisbar/` | `~/Library/Application Support/ferrisbar/` |
-| Data dir | `$XDG_DATA_HOME/ferrisbar/` else `~/.local/share/ferrisbar/` | `~/Library/Application Support/ferrisbar/` |
-| Config file | `<config dir>/config.toml` | `<config dir>/config.toml` |
-| Log file | `<data dir>/logs/ferrisbar.jsonl` | `<data dir>/logs/ferrisbar.jsonl` |
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Config dir | `$XDG_CONFIG_HOME/ferrisbar/` else `~/.config/ferrisbar/` | `~/Library/Application Support/ferrisbar/` | `%APPDATA%\ferrisbar\` |
+| Data dir | `$XDG_DATA_HOME/ferrisbar/` else `~/.local/share/ferrisbar/` | `~/Library/Application Support/ferrisbar/` | `%LOCALAPPDATA%\ferrisbar\` |
+| Config file | `<config dir>/config.toml` | `<config dir>/config.toml` | `<config dir>\config.toml` |
+| Log file | `<data dir>/logs/ferrisbar.jsonl` | `<data dir>/logs/ferrisbar.jsonl` | `<data dir>\logs\ferrisbar.jsonl` |
 
-Platform selection uses `cfg(target_os = "macos")`. On macOS the config
-and data directories are the same path; the code must not assume they
+Platform selection uses `cfg(target_os = "macos")`, `cfg(windows)`, and
+an XDG fallback for everything else. On macOS the config and data
+directories resolve to the same path; the code must not assume they
 differ.
+
+### Windows is a first-class target
+
+`.github/workflows/ci.yml:17` runs the test matrix on `windows-latest`,
+and `release-please.yml` ships an `x86_64-pc-windows-msvc` archive.
+Windows is therefore supported, not incidental.
+
+This matters because a macOS-else-XDG split would drop Windows into the
+XDG branch, which keys off `HOME` — a variable Windows usually leaves
+unset in favor of `USERPROFILE`. Config creation would silently no-op and
+every "config.toml is created" test would fail on a third of the CI
+matrix.
+
+The Windows branch reads `%APPDATA%` and `%LOCALAPPDATA%` directly. Both
+are set by the OS for interactive sessions; when either is unset or
+empty, the resolver returns `None` and the feature degrades exactly as it
+does for an unset `HOME`. Since CI already runs Windows on every PR, this
+branch is exercised continuously rather than left to rot.
 
 `$XDG_CONFIG_HOME` and `$XDG_DATA_HOME` are honored only when set **and**
 non-empty, and only when they are absolute paths — a relative XDG value
@@ -89,9 +110,25 @@ writes to that path, so the bug is latent. This feature would activate it,
 causing `create_dir_all` to create a stray `./ferrisbar/` directory inside
 whatever repository Claude Code happens to be running in.
 
-Therefore: every resolver in `paths.rs` returns `Option<PathBuf>` and
-returns `None` when `HOME` is unset or empty. `None` means skip config
-file creation, disable logging, and render the statusline normally.
+Therefore: every resolver in `paths.rs` returns `Option<PathBuf>`, and
+returns `None` when its platform's base variable (`HOME`, or `%APPDATA%`
+/ `%LOCALAPPDATA%` on Windows) is unset or empty. `None` means skip
+config file creation, disable logging, and render the statusline
+normally.
+
+### Resolvers take inputs as parameters
+
+`paths.rs` exposes pure functions — `resolve_config_dir(home: Option<&str>,
+xdg: Option<&str>) -> Option<PathBuf>` and friends — with a thin
+env-reading wrapper called only from `main` and `setup`.
+
+This is a testability requirement, not a style preference. `cargo test`
+runs a binary's unit tests multi-threaded in a single process, so a test
+that mutates `HOME` or `XDG_CONFIG_HOME` via `std::env::set_var` races
+every other test in that binary, including tests that never touch paths.
+Pure resolvers make the path logic exhaustively testable without any
+process-global mutation. (`tests/cli.rs` is unaffected — it sets env
+per-`Command` on a child process, which is safe.)
 
 `config_dir.rs` keeps its `unwrap_or_default()` fallback, which is only
 ever used for reads, where a relative path fails harmlessly rather than
@@ -288,13 +325,22 @@ Checked on each write, when the log file is at or over `max_size_bytes`:
 
 Several Claude Code sessions run ferrisbar concurrently. A process that
 opened the log *before* the winner renamed it still holds a descriptor
-pointing at that same inode. Appending through that stale descriptor would
-write into the file the winner is concurrently gzipping — producing a
-corrupt archive, not merely a lost line.
+pointing at that same inode. Appending through that stale descriptor
+writes into the file the winner is concurrently archiving, so the line is
+lost or torn depending on where gzip has read to. The gzip stream itself
+stays structurally valid — the damage is to the record, not the archive
+format.
 
 The ordering is therefore fixed as **lock → stat → rotate → open →
 append**, never open-then-lock. Any implementation that opens the log
-before acquiring the lock is wrong regardless of how it behaves in tests.
+before acquiring the lock is wrong regardless of how it behaves in tests,
+because single-process tests cannot distinguish the two.
+
+**Accepted race:** two processes can both judge the same lock stale and
+both remove it, yielding two concurrent rotators. The consequence is a
+dropped archive generation, not corruption, and the window requires a
+crash mid-rotation plus 60 seconds. Accepted rather than engineered
+around.
 
 ### Performance
 
@@ -317,6 +363,22 @@ Two new runtime dependencies. `CLAUDE.md` requires justification and a
 Transitively this adds roughly `miniz_oxide`, `crc32fast`, `toml_edit`,
 `winnow`, `serde_spanned`, and `toml_datetime`.
 
+### `toml` must be version-pinned
+
+As of this writing `toml` 1.1.3 declares `rust-version = "1.85"` against
+ferrisbar's MSRV of **1.85.1** — a one-patch margin. `flate2` 1.1.9 is
+comfortable at 1.67.
+
+`toml` is therefore pinned to a bounded range (`>=1.1, <1.2`) rather than
+a bare `"1"`. Without the bound, a routine `cargo update` can raise the
+transitive MSRV and break `just msrv` with no code change to attribute it
+to — a failure mode that is cheap to prevent now and genuinely confusing
+to diagnose later.
+
+Phase 1's first implementation step is to add both crates and run
+`just msrv`, confirming the resolved tree builds at 1.85.1 before any
+feature code is written.
+
 ### CI gates
 
 - **`cargo deny`** — all new crates are MIT/Apache-2.0. `miniz_oxide`'s
@@ -338,7 +400,15 @@ Transitively this adds roughly `miniz_oxide`, `crc32fast`, `toml_edit`,
 | `src/log.rs` | New. Append, rotate, gzip. | `config` |
 | `src/config_dir.rs` | Gains an override parameter. | env |
 | `src/main.rs` | Wiring. | all |
-| `src/setup.rs` | Reports resolved paths. | `paths`, `config` |
+| `src/setup.rs` | Reports resolved paths; guard relaxed (below). | `paths`, `config` |
+
+`setup.rs:14-21` currently errors out when neither `$CLAUDE_CONFIG_DIR`
+nor `$HOME` is set. Once `claude.config_dir` exists as a config key, that
+guard rejects a case that has become valid — a user who sets the
+directory in `config.toml` and has neither variable exported. The guard
+must additionally accept a non-empty `claude.config_dir`, and its error
+message must name all three sources rather than two. This is separate
+code from `config_dir.rs`'s override parameter and needs its own change.
 
 `main.rs` order of operations, after argument parsing and before reading
 stdin: resolve paths → ensure directories → load config → initialize
@@ -365,22 +435,40 @@ Both are extensions of rules the codebase already holds.
 
 ### Environment isolation
 
-`tests/cli.rs` drives the real binary. Without overriding `HOME` and the
-`XDG_*` variables to a tempdir, `just ci` would write into the developer's
-actual `~/.config` and `~/.local/share` — and would rotate and gzip their
-real log. Every test touching paths sets those variables explicitly.
-`tempfile` is already a dev-dependency.
+`tests/cli.rs` drives the real binary. Without overriding `HOME`,
+`XDG_*`, and (on Windows) `APPDATA` / `LOCALAPPDATA` to a tempdir,
+`just ci` would write into the developer's actual config and data
+directories — and would rotate and gzip their real log.
+
+**This is a retrofit, not an addition.** The moment `main` starts
+creating `config.toml`, every *existing* test in `tests/cli.rs` that
+spawns the binary begins touching the real home directory. Phase 1 must
+add env overrides to the current tests, not only to new ones. A shared
+`fn cmd_with_tempdir() -> (Command, TempDir)` helper keeps the override
+in one place, and every `Command` in the file goes through it.
+
+Unit tests need no env manipulation at all, because `paths.rs` resolvers
+take their inputs as parameters (see "Resolvers take inputs as
+parameters"). `tempfile` is already a dev-dependency.
 
 ### Unit tests
 
 `mod tests` beside each module, per house style.
 
-**`paths.rs`**
+**`paths.rs`** — all inputs passed as parameters, no env mutation
 - `XDG_CONFIG_HOME` / `XDG_DATA_HOME` honored when set and absolute
 - relative XDG value ignored in favor of the fallback
 - fallback paths when XDG unset
-- **`None` when `HOME` is empty** — guards the relative-path bug directly
+- **`None` when `HOME` is empty**, and when it is `None` — guards the
+  relative-path bug directly
 - macOS branch resolves both dirs to Application Support
+- Windows branch resolves to `%APPDATA%` / `%LOCALAPPDATA%`, and returns
+  `None` when either is empty
+
+Because the resolvers are pure, the macOS and Windows branches can be
+tested by shape on every platform wherever the `cfg` split allows;
+whatever remains `cfg`-gated is covered by the existing three-OS CI
+matrix.
 
 **`config.rs`**
 - missing file is created with the template
@@ -409,9 +497,11 @@ With `HOME` pointed at a tempdir:
 - a normal payload renders correctly and `config.toml` is created
 - a malformed `config.toml` still renders, and logs one warning
 - a non-writable data directory still renders
-- unset `HOME` still renders
+- unset `HOME` (and unset `%APPDATA%` on Windows) still renders
 - **stdout is byte-identical to today's output in all of the above** —
   this is the assertion that proves the feature cannot corrupt a prompt
+- all pre-existing `tests/cli.rs` assertions continue to pass unchanged
+  once routed through the tempdir helper
 
 ### Concurrency
 
