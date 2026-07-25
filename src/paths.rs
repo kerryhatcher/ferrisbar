@@ -1,9 +1,5 @@
 use std::path::{Path, PathBuf};
 
-// Used by platform_dir and tests; dead_code warning is suppressed because
-// this constant is referenced in cfg-gated code paths that may not compile
-// on all platforms.
-#[allow(dead_code)]
 const APP_DIR: &str = "ferrisbar";
 
 /// Accepts a directory only when it is present, non-empty, and absolute.
@@ -11,8 +7,6 @@ const APP_DIR: &str = "ferrisbar";
 /// The absolute check is what keeps a stray `./ferrisbar/` from being
 /// created inside whatever repository Claude Code happens to be running in
 /// — see the empty-HOME guard in the design spec.
-// Dead code: used by platform_dir and by tests; not yet called from main.
-#[allow(dead_code)]
 fn usable_dir(raw: Option<&str>) -> Option<PathBuf> {
     let raw = raw?;
     if raw.is_empty() {
@@ -55,41 +49,31 @@ fn platform_dir(base: Option<&str>, xdg: Option<&str>, unix_fallback: &str) -> O
 
 /// `base` is `$HOME` on Unix and `%APPDATA%` on Windows. `xdg` is
 /// `$XDG_CONFIG_HOME` and is consulted only on the XDG branch.
-// Dead code: public API used by config_file wrapper and by task 4 config loading.
-#[allow(dead_code)]
 pub fn resolve_config_dir(base: Option<&str>, xdg: Option<&str>) -> Option<PathBuf> {
     platform_dir(base, xdg, ".config")
 }
 
 /// `base` is `$HOME` on Unix and `%LOCALAPPDATA%` on Windows. `xdg` is
 /// `$XDG_DATA_HOME` and is consulted only on the XDG branch.
-// Dead code: public API used by data_dir wrapper and by task 4 config loading.
-#[allow(dead_code)]
 pub fn resolve_data_dir(base: Option<&str>, xdg: Option<&str>) -> Option<PathBuf> {
     platform_dir(base, xdg, ".local/share")
 }
 
-// Dead code: public API used by task 5 logging setup.
+// Public API consumed by task 5 logging setup.
 #[allow(dead_code)]
 pub fn default_log_path(data_dir: &Path) -> PathBuf {
     data_dir.join("logs").join("ferrisbar.jsonl")
 }
 
-// Dead code: used by config_file, data_dir, and config_file wrapper; not yet called from main.
-#[allow(dead_code)]
 fn env_opt(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-// Dead code: used by config_file and data_dir wrappers; not yet called from main.
-#[allow(dead_code)]
 #[cfg(windows)]
 fn base_vars() -> (Option<String>, Option<String>) {
     (env_opt("APPDATA"), env_opt("LOCALAPPDATA"))
 }
 
-// Dead code: used by config_file and data_dir wrappers; not yet called from main.
-#[allow(dead_code)]
 #[cfg(not(windows))]
 fn base_vars() -> (Option<String>, Option<String>) {
     let home = env_opt("HOME");
@@ -98,7 +82,7 @@ fn base_vars() -> (Option<String>, Option<String>) {
 
 /// `<config dir>/config.toml`, or `None` when the platform base directory
 /// is unavailable.
-// Dead code: public API used by task 4 config loading; not yet called from main.
+// Public API consumed by task 4 config loading.
 #[allow(dead_code)]
 pub fn config_file() -> Option<PathBuf> {
     let (config_base, _) = base_vars();
@@ -110,7 +94,7 @@ pub fn config_file() -> Option<PathBuf> {
 }
 
 /// The data directory, or `None` when the platform base is unavailable.
-// Dead code: public API used by task 8 logging wire-up; not yet called from main.
+// Public API consumed by task 8 logging wire-up.
 #[allow(dead_code)]
 pub fn data_dir() -> Option<PathBuf> {
     let (_, data_base) = base_vars();
