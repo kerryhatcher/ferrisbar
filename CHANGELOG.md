@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/kerryhatcher/ferrisbar/compare/v0.2.0...v0.3.0) (2026-07-26)
+
+
+### Features
+
+* config file, JSONL logging, and display customization ([8b0d226](https://github.com/kerryhatcher/ferrisbar/commit/8b0d226cd3a03c1cf1af1a8220e85deb97e69d32))
+
 ## [0.2.0](https://github.com/kerryhatcher/ferrisbar/compare/v0.1.0...v0.2.0) (2026-07-25)
 
 
