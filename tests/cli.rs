@@ -329,11 +329,7 @@ fn a_normal_render_creates_the_config_file() {
     assert!(ok);
     assert!(stdout.contains("Claude"));
     assert!(
-        home.path()
-            .join(".config")
-            .join("ferrisbar")
-            .join("config.toml")
-            .exists(),
+        config_dir(home.path()).join("config.toml").exists(),
         "the config file is created on first run"
     );
 }
