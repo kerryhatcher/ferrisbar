@@ -18,6 +18,13 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+# Pinned below 1.2: toml 1.1.3 declares rust-version 1.85, one patch under
+# our 1.85.1 MSRV. An unbounded range lets `cargo update` break `just msrv`
+# with no code change to attribute it to.
+toml = { version = ">=1.1, <1.2", default-features = false, features = ["std", "parse", "serde"] }
+# rust_backend routes through pure-Rust miniz_oxide instead of libz-sys,
+# keeping a C toolchain out of the build and cargo-geiger's unsafe count down.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 tempfile = "3"

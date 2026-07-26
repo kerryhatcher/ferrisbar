@@ -4,7 +4,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn resolve_settings_path(project_scope: bool) -> Result<PathBuf, String> {
+fn resolve_settings_path(
+    project_scope: bool,
+    file_override: Option<&str>,
+) -> Result<PathBuf, String> {
     if project_scope {
         let cwd = env::current_dir()
             .map_err(|e| format!("failed to determine the current directory: {e}"))?;
@@ -12,14 +15,16 @@ fn resolve_settings_path(project_scope: bool) -> Result<PathBuf, String> {
     }
 
     let has_config_dir = env::var("CLAUDE_CONFIG_DIR").is_ok_and(|v| !v.is_empty());
+    let has_file_override = file_override.is_some_and(|v| !v.is_empty());
     let has_home = env::var("HOME").is_ok_and(|v| !v.is_empty());
-    if !has_config_dir && !has_home {
+    if !has_config_dir && !has_file_override && !has_home {
         return Err(
-            "Cannot resolve the Claude Code config directory: neither $CLAUDE_CONFIG_DIR nor $HOME is set."
+            "Cannot resolve the Claude Code config directory: none of $CLAUDE_CONFIG_DIR, \
+             claude.config_dir in config.toml, or $HOME is set."
                 .to_string(),
         );
     }
-    Ok(config_dir::claude_config_dir().join("settings.json"))
+    Ok(config_dir::claude_config_dir(file_override).join("settings.json"))
 }
 
 fn apply_statusline_update(
@@ -66,8 +71,9 @@ fn apply_statusline_update(
     Ok(previous)
 }
 
-pub fn run(project_scope: bool) -> Result<(), String> {
-    let settings_path = resolve_settings_path(project_scope)?;
+pub fn run(project_scope: bool, cfg: &crate::config::Config) -> Result<(), String> {
+    let file_override = Some(cfg.claude.config_dir.as_str());
+    let settings_path = resolve_settings_path(project_scope, file_override)?;
     let new_command = env::current_exe()
         .map_err(|e| format!("failed to resolve the current executable path: {e}"))?
         .to_string_lossy()
@@ -81,6 +87,17 @@ pub fn run(project_scope: bool) -> Result<(), String> {
         None => println!("  before: (none)"),
     }
     println!("  after:  {new_command}");
+    if let Some(path) = crate::paths::config_file() {
+        println!("Config: {}", path.display());
+    }
+    let level = crate::log::Level::from_str_lenient(&cfg.log.level);
+    if cfg.log.enabled && level != crate::log::Level::Off {
+        if let Some(log_path) =
+            crate::log::resolve_log_path(&cfg.log.path, crate::paths::data_dir().as_deref())
+        {
+            println!("Log:    {}", log_path.display());
+        }
+    }
     println!("Start a new Claude Code session for the change to take effect.");
 
     Ok(())
@@ -161,6 +178,13 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn guard_accepts_a_config_file_override() {
+        // Not asserting on the path, only that a config-only source is accepted.
+        let result = resolve_settings_path(false, Some("/from/config"));
+        assert!(result.is_ok());
     }
 
     #[test]
