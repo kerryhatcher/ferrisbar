@@ -114,7 +114,14 @@ mod tests {
 
     #[test]
     fn usable_dir_accepts_absolute() {
-        assert!(usable_dir(Some("/home/someone")).is_some());
+        #[cfg(not(windows))]
+        {
+            assert!(usable_dir(Some("/home/someone")).is_some());
+        }
+        #[cfg(windows)]
+        {
+            assert!(usable_dir(Some(r"C:\Users\someone")).is_some());
+        }
     }
 
     #[test]
@@ -127,18 +134,26 @@ mod tests {
 
     #[test]
     fn dirs_end_in_app_name() {
-        let cfg = resolve_config_dir(Some("/base"), None).unwrap();
-        let data = resolve_data_dir(Some("/base"), None).unwrap();
+        #[cfg(not(windows))]
+        let base = "/base";
+        #[cfg(windows)]
+        let base = r"C:\base";
+
+        let cfg = resolve_config_dir(Some(base), None).unwrap();
+        let data = resolve_data_dir(Some(base), None).unwrap();
         assert_eq!(cfg.file_name().unwrap(), APP_DIR);
         assert_eq!(data.file_name().unwrap(), APP_DIR);
     }
 
     #[test]
     fn dirs_are_absolute() {
-        assert!(resolve_config_dir(Some("/base"), None)
-            .unwrap()
-            .is_absolute());
-        assert!(resolve_data_dir(Some("/base"), None).unwrap().is_absolute());
+        #[cfg(not(windows))]
+        let base = "/base";
+        #[cfg(windows)]
+        let base = r"C:\base";
+
+        assert!(resolve_config_dir(Some(base), None).unwrap().is_absolute());
+        assert!(resolve_data_dir(Some(base), None).unwrap().is_absolute());
     }
 
     #[test]

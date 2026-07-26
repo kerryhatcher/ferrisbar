@@ -1,7 +1,52 @@
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+
+/// The config directory under `home`, matching `paths.rs`'s platform
+/// resolution. Tests must use this instead of hardcoding `.config/ferrisbar`
+/// or `Library/Application Support/ferrisbar`, because the binary resolves
+/// differently on each OS and the test's `HOME` is a tempdir.
+fn config_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library")
+            .join("Application Support")
+            .join("ferrisbar")
+    }
+    #[cfg(windows)]
+    {
+        home.join("ferrisbar")
+    }
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
+    {
+        home.join(".config").join("ferrisbar")
+    }
+}
+
+/// The data directory under `home`, matching `paths.rs`'s platform
+/// resolution. On macOS this is the same as `config_dir`.
+fn data_dir(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library")
+            .join("Application Support")
+            .join("ferrisbar")
+    }
+    #[cfg(windows)]
+    {
+        home.join("ferrisbar")
+    }
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
+    {
+        home.join(".local").join("share").join("ferrisbar")
+    }
+}
+
+/// The log file path under `home`.
+fn log_file(home: &Path) -> PathBuf {
+    data_dir(home).join("logs").join("ferrisbar.jsonl")
+}
 
 /// Env vars whose presence in the developer's real shell could route a
 /// spawned child into real state instead of a tempdir. `FERRISBAR_LOG_PATH`
@@ -296,7 +341,7 @@ fn a_normal_render_creates_the_config_file() {
 #[test]
 fn a_malformed_config_still_renders_and_is_left_untouched() {
     let (mut cmd, home) = isolated();
-    let dir = home.path().join(".config").join("ferrisbar");
+    let dir = config_dir(home.path());
     std::fs::create_dir_all(&dir).unwrap();
     let original = "not = = toml";
     std::fs::write(dir.join("config.toml"), original).unwrap();
@@ -313,13 +358,7 @@ fn a_malformed_config_still_renders_and_is_left_untouched() {
         original
     );
 
-    let log = home
-        .path()
-        .join(".local")
-        .join("share")
-        .join("ferrisbar")
-        .join("logs")
-        .join("ferrisbar.jsonl");
+    let log = log_file(home.path());
     assert!(
         std::fs::read_to_string(&log)
             .unwrap()
@@ -346,7 +385,7 @@ fn stdout_is_identical_with_and_without_a_config_file() {
 #[test]
 fn logging_disabled_creates_no_log_directory() {
     let (mut cmd, home) = isolated();
-    let dir = home.path().join(".config").join("ferrisbar");
+    let dir = config_dir(home.path());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.toml"), "[log]\nenabled = false\n").unwrap();
 
@@ -354,13 +393,7 @@ fn logging_disabled_creates_no_log_directory() {
 
     assert!(ok);
     assert!(stdout.contains("Claude"));
-    assert!(!home
-        .path()
-        .join(".local")
-        .join("share")
-        .join("ferrisbar")
-        .join("logs")
-        .exists());
+    assert!(!data_dir(home.path()).join("logs").exists());
 }
 
 /// A `Command` with `HOME`/`APPDATA`/`LOCALAPPDATA` and every var in
@@ -405,7 +438,7 @@ fn no_stray_directory_is_created_when_home_is_unset() {
 #[test]
 fn env_var_beats_the_config_file_for_the_claude_dir() {
     let (mut cmd, home) = isolated();
-    let dir = home.path().join(".config").join("ferrisbar");
+    let dir = config_dir(home.path());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("config.toml"),
@@ -439,7 +472,7 @@ fn env_var_beats_the_config_file_for_the_claude_dir() {
 #[test]
 fn ferrisbar_log_level_env_var_beats_the_config_file() {
     let (mut cmd, home) = isolated();
-    let dir = home.path().join(".config").join("ferrisbar");
+    let dir = config_dir(home.path());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.toml"), "[log]\nlevel = \"off\"\n").unwrap();
     cmd.env("FERRISBAR_LOG_LEVEL", "debug");
@@ -447,13 +480,7 @@ fn ferrisbar_log_level_env_var_beats_the_config_file() {
     let (_, ok) = run(&mut cmd, PAYLOAD);
 
     assert!(ok);
-    let log = home
-        .path()
-        .join(".local")
-        .join("share")
-        .join("ferrisbar")
-        .join("logs")
-        .join("ferrisbar.jsonl");
+    let log = log_file(home.path());
     assert!(
         std::fs::read_to_string(&log)
             .unwrap()
@@ -490,7 +517,7 @@ fn a_non_writable_data_directory_still_renders() {
     }
 
     let (mut cmd, home) = isolated();
-    let data_dir = home.path().join(".local").join("share").join("ferrisbar");
+    let data_dir = data_dir(home.path());
     std::fs::create_dir_all(&data_dir).unwrap();
     let original_mode = std::fs::metadata(&data_dir).unwrap().permissions().mode();
     std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
@@ -516,7 +543,7 @@ fn a_non_writable_data_directory_still_renders() {
 #[test]
 fn ferrisbar_log_level_env_var_re_enables_logging_disabled_in_the_file() {
     let (mut cmd, home) = isolated();
-    let dir = home.path().join(".config").join("ferrisbar");
+    let dir = config_dir(home.path());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.toml"), "[log]\nenabled = false\n").unwrap();
     cmd.env("FERRISBAR_LOG_LEVEL", "debug");
@@ -524,13 +551,7 @@ fn ferrisbar_log_level_env_var_re_enables_logging_disabled_in_the_file() {
     let (_, ok) = run(&mut cmd, PAYLOAD);
 
     assert!(ok);
-    let log = home
-        .path()
-        .join(".local")
-        .join("share")
-        .join("ferrisbar")
-        .join("logs")
-        .join("ferrisbar.jsonl");
+    let log = log_file(home.path());
     assert!(
         std::fs::read_to_string(&log)
             .unwrap()
@@ -558,7 +579,7 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
     use std::io::{Read as _, Write as _};
 
     let home = tempfile::tempdir().unwrap();
-    let config_dir = home.path().join(".config").join("ferrisbar");
+    let config_dir = config_dir(home.path());
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.toml"),
@@ -568,12 +589,7 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
 
     // Pre-seed the log past max_size_bytes so the very first render rotates.
     // Without this the test passes trivially with zero archives.
-    let logs = home
-        .path()
-        .join(".local")
-        .join("share")
-        .join("ferrisbar")
-        .join("logs");
+    let logs = data_dir(home.path()).join("logs");
     std::fs::create_dir_all(&logs).unwrap();
     let log_file = logs.join("ferrisbar.jsonl");
     std::fs::write(&log_file, format!("{}\n", "s".repeat(8192))).unwrap();
