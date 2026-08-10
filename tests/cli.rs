@@ -48,6 +48,16 @@ fn log_file(home: &Path) -> PathBuf {
     data_dir(home).join("logs").join("ferrisbar.jsonl")
 }
 
+/// A path's `Display` form, escaped for embedding in a JSON or TOML
+/// double-quoted string literal (both treat a lone `\` as the start of an
+/// escape sequence, so it must become `\\`). A Windows tempdir path
+/// contains backslashes and Unix paths never do, so this is a no-op there —
+/// but skipping it on Windows produces a string the JSON/TOML parser
+/// rejects outright, which one test discovered by rendering nothing at all.
+fn escape_for_string_literal(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 /// Env vars whose presence in the developer's real shell could route a
 /// spawned child into real state instead of a tempdir. `FERRISBAR_LOG_PATH`
 /// and `FERRISBAR_LOG_LEVEL` beat the config file outright (`src/main.rs`),
@@ -65,12 +75,20 @@ const OVERRIDABLE_ENV_VARS: &[&str] = &[
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     "FERRISBAR_LOG_PATH",
     "FERRISBAR_LOG_LEVEL",
+    "FERRISBAR_COST_TTL_SECONDS",
 ];
 
 /// A `Command` rooted at `home` for `HOME`/`APPDATA`/`LOCALAPPDATA`, with
 /// every var in `OVERRIDABLE_ENV_VARS` removed. Used by `isolated()` and by
 /// the handful of tests that need a second (or Nth) process sharing an
 /// already-created home directory.
+///
+/// `FERRISBAR_COST_TTL_SECONDS=0` disables the daily-cost background
+/// refresh by default: nearly every test here is unrelated to the cost
+/// feature, and a spawned detached process per render is both slow and a
+/// source of cross-run nondeterminism (see
+/// `stdout_is_identical_with_and_without_a_config_file`). Tests that
+/// exercise the cost feature itself override this var back off explicitly.
 fn command_with_home(home: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ferrisbar"));
     cmd.env("HOME", home)
@@ -79,6 +97,7 @@ fn command_with_home(home: &Path) -> std::process::Command {
     for var in OVERRIDABLE_ENV_VARS {
         cmd.env_remove(var);
     }
+    cmd.env("FERRISBAR_COST_TTL_SECONDS", "0");
     cmd
 }
 
@@ -124,7 +143,7 @@ fn minimal_payload_shows_model_and_dirname_only() {
         payload,
         &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
     );
-    assert_eq!(out, "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m");
+    assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m");
 }
 
 #[test]
@@ -145,7 +164,7 @@ fn missing_model_defaults_to_claude() {
         payload,
         &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
     );
-    assert_eq!(out, "\x1b[2mClaude\x1b[0m │ \x1b[2mmyproject\x1b[0m");
+    assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mClaude\x1b[0m");
 }
 
 #[test]
@@ -158,8 +177,89 @@ fn context_bar_rendered_when_context_window_present() {
     );
     assert_eq!(
         out,
-        "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m"
+        "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m"
     );
+}
+
+#[test]
+fn git_branch_rendered_after_the_folder_name() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    std::fs::write(
+        repo.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .unwrap();
+    let project_dir = repo.path().join("myproject");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let payload = format!(
+        r#"{{"model":{{"display_name":"Sonnet"}},"workspace":{{"current_dir":"{}"}}}}"#,
+        escape_for_string_literal(&project_dir)
+    );
+    let empty_todos = tempfile::tempdir().unwrap();
+    let out = run_with_env(
+        &payload,
+        &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
+    );
+    assert_eq!(
+        out,
+        "\x1b[2mmyproject\x1b[0m │ \x1b[2mmain\x1b[0m │ \x1b[2mSonnet\x1b[0m"
+    );
+}
+
+#[test]
+fn no_git_branch_segment_outside_a_repo() {
+    let payload =
+        r#"{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/tmp/myproject"}}"#;
+    let empty_todos = tempfile::tempdir().unwrap();
+    let out = run_with_env(
+        payload,
+        &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
+    );
+    assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m");
+}
+
+#[test]
+fn session_cost_rendered_next_to_context_bar() {
+    let payload = r#"{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/tmp/myproject"},"context_window":{"remaining_percentage":100.0,"total_tokens":1000000},"cost":{"total_cost_usd":0.4213}}"#;
+    let empty_todos = tempfile::tempdir().unwrap();
+    let out = run_with_env(
+        payload,
+        &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
+    );
+    assert_eq!(
+        out,
+        "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m \x1b[2m│\x1b[0m \x1b[2m$0.42\x1b[0m"
+    );
+}
+
+#[test]
+fn session_cost_omitted_when_no_context_window() {
+    let payload = r#"{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/tmp/myproject"},"cost":{"total_cost_usd":0.42}}"#;
+    let empty_todos = tempfile::tempdir().unwrap();
+    let out = run_with_env(
+        payload,
+        &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
+    );
+    assert!(
+        !out.contains('$'),
+        "no context bar means nothing to attach the cost chip to"
+    );
+}
+
+#[test]
+fn session_cost_omitted_when_show_session_disabled_in_config() {
+    let payload = r#"{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/tmp/myproject"},"context_window":{"remaining_percentage":100.0,"total_tokens":1000000},"cost":{"total_cost_usd":0.42}}"#;
+    let (mut cmd, home) = isolated();
+    let dir = config_dir(home.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.toml"), "[cost]\nshow_session = false\n").unwrap();
+
+    let (out, ok) = run(&mut cmd, payload);
+
+    assert!(ok);
+    assert!(!out.contains('$'));
 }
 
 #[test]
@@ -177,7 +277,7 @@ fn active_todo_shown_in_bold() {
     );
     assert_eq!(
         out,
-        "\x1b[2mSonnet\x1b[0m │ \x1b[1mFixing bug\x1b[0m │ \x1b[2mmyproject\x1b[0m"
+        "\x1b[2mmyproject\x1b[0m │ \x1b[1mFixing bug\x1b[0m │ \x1b[2mSonnet\x1b[0m"
     );
 }
 
@@ -440,7 +540,7 @@ fn env_var_beats_the_config_file_for_the_claude_dir() {
         dir.join("config.toml"),
         format!(
             "[claude]\nconfig_dir = \"{}\"\n",
-            home.path().join("from-file").display()
+            escape_for_string_literal(&home.path().join("from-file"))
         ),
     )
     .unwrap();
@@ -483,6 +583,90 @@ fn ferrisbar_log_level_env_var_beats_the_config_file() {
             .contains("\"event\":\"render\""),
         "FERRISBAR_LOG_LEVEL must override level = \"off\" in the file"
     );
+}
+
+/// Duplicates `cost::civil_from_days`/`today_utc_date` for fixture purposes
+/// only. `tests/cli.rs` drives the compiled binary as a black box — it has
+/// no visibility into `src/cost.rs`'s internals — so a cache fixture that
+/// needs to look like "today" to the binary has to compute "today" the same
+/// way. The algorithm itself is unit-tested in `src/cost.rs`; this copy only
+/// needs to agree with it well enough to seed a fixture.
+fn today_utc_date() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    #[allow(clippy::cast_possible_wrap)]
+    let days = (secs as i64).div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    #[allow(clippy::cast_sign_loss)]
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    #[allow(clippy::cast_possible_wrap)]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    #[allow(clippy::cast_possible_truncation)]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[test]
+fn daily_cost_chip_reads_a_preseeded_cache() {
+    let (mut cmd, home) = isolated();
+    cmd.env("FERRISBAR_COST_TTL_SECONDS", "90");
+    std::fs::create_dir_all(data_dir(home.path())).unwrap();
+    std::fs::write(
+        data_dir(home.path()).join("cost-cache.json"),
+        format!(
+            r#"{{"date":"{}","total_usd":4.2,"by_model":[["claude-sonnet-5",4.2]]}}"#,
+            today_utc_date()
+        ),
+    )
+    .unwrap();
+
+    let (out, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(out.contains("$4.20"), "got: {out:?}");
+    assert!(out.contains("today"));
+    assert!(out.contains("Sonnet"));
+    assert!(out.contains('\n'), "the daily total is on its own line");
+}
+
+#[test]
+fn daily_cost_chip_ignores_a_stale_dated_cache() {
+    let (mut cmd, home) = isolated();
+    cmd.env("FERRISBAR_COST_TTL_SECONDS", "90");
+    std::fs::create_dir_all(data_dir(home.path())).unwrap();
+    std::fs::write(
+        data_dir(home.path()).join("cost-cache.json"),
+        r#"{"date":"2000-01-01","total_usd":4.2,"by_model":[]}"#,
+    )
+    .unwrap();
+
+    let (out, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(
+        !out.contains('\n'),
+        "a previous day's cache is not shown: {out:?}"
+    );
+}
+
+#[test]
+fn daily_cost_chip_absent_with_no_cache_and_zero_ttl() {
+    // command_with_home() defaults FERRISBAR_COST_TTL_SECONDS to "0".
+    let (mut cmd, _home) = isolated();
+
+    let (out, ok) = run(&mut cmd, PAYLOAD);
+
+    assert!(ok);
+    assert!(!out.contains('\n'));
 }
 
 /// Shells out to `id -u` rather than an `unsafe extern "C" geteuid` binding —

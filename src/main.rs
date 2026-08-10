@@ -1,6 +1,9 @@
 mod config;
 mod config_dir;
 mod context_bar;
+mod cost;
+mod cost_cache;
+mod git;
 mod layout;
 mod log;
 mod paths;
@@ -15,6 +18,10 @@ use std::path::{Path, PathBuf};
 
 fn resolve_todos_dir(cfg: &config::Config) -> PathBuf {
     config_dir::claude_config_dir(Some(&cfg.claude.config_dir)).join("todos")
+}
+
+fn resolve_transcripts_dir(cfg: &config::Config) -> PathBuf {
+    config_dir::claude_config_dir(Some(&cfg.claude.config_dir)).join("projects")
 }
 
 /// Environment beats file, applied before the logger reads the config.
@@ -40,6 +47,16 @@ fn apply_env_overrides(cfg: &mut config::Config) {
         }
         cfg.log.level = level;
     }
+    // A quick, file-free way to silence the daily-cost background refresh —
+    // handy in CI/tests, where spawning a detached process per render is
+    // pure noise, and for a one-off session where the feature is unwanted.
+    if let Some(ttl) = env::var("FERRISBAR_COST_TTL_SECONDS")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse().ok())
+    {
+        cfg.cost.ttl_seconds = ttl;
+    }
 }
 
 fn flush_config_warnings(logger: &log::Logger, warnings: &[config::ParseWarning]) {
@@ -59,10 +76,21 @@ fn flush_config_warnings(logger: &log::Logger, warnings: &[config::ParseWarning]
 /// should return without reading stdin. `setup` runs to completion (or
 /// exits the process on failure) before returning `true`; an unknown
 /// subcommand exits the process directly.
-fn dispatch_subcommand(cfg: &config::Config) -> bool {
+///
+/// `--internal-refresh-daily-cost` is undocumented on purpose: it exists
+/// only so `cost_cache::spawn_refresh` can re-invoke this same binary as a
+/// detached background process (see that module's docs), never something a
+/// user types themselves.
+fn dispatch_subcommand(cfg: &config::Config, data_dir: Option<&Path>) -> bool {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [] => false,
+        [cmd] if cmd == "--internal-refresh-daily-cost" => {
+            if let Some(data_dir) = data_dir {
+                cost::refresh_daily_cache(&resolve_transcripts_dir(cfg), data_dir);
+            }
+            true
+        }
         [cmd] if cmd == "setup" => {
             if let Err(e) = setup::run(false, cfg) {
                 eprintln!("{e}");
@@ -122,10 +150,11 @@ fn main() {
     let (mut cfg, warnings) = config::load(paths::config_file().as_deref());
     apply_env_overrides(&mut cfg);
 
-    let logger = log::Logger::new(&cfg, paths::data_dir().as_deref());
+    let data_dir = paths::data_dir();
+    let logger = log::Logger::new(&cfg, data_dir.as_deref());
     flush_config_warnings(&logger, &warnings);
 
-    if dispatch_subcommand(&cfg) {
+    if dispatch_subcommand(&cfg, data_dir.as_deref()) {
         return;
     }
 
@@ -176,14 +205,26 @@ fn main() {
     let dirname = Path::new(&cwd)
         .file_name()
         .map_or_else(|| cwd.clone(), |n| n.to_string_lossy().into_owned());
+    let branch = git::branch_name(&cwd);
 
-    let output = layout::compose_statusline(
+    let session_cost = cfg
+        .cost
+        .show_session
+        .then(|| payload.session_cost_usd())
+        .flatten();
+    let mut output = layout::compose_statusline(
         &model,
         &ctx,
         task.as_deref(),
         &dirname,
         cfg.display.show_task,
+        session_cost,
+        branch.as_deref(),
     );
+    if let Some(daily) = cost::daily_chip(&cfg.cost, data_dir.as_deref()) {
+        output.push('\n');
+        output.push_str(&daily);
+    }
 
     let used_pct = payload
         .remaining_percentage()
