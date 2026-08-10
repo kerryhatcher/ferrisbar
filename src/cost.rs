@@ -680,7 +680,11 @@ pub fn budget_line(
         }
     }
 
-    if let Some(payload) = data_dir.and_then(|d| fresh_same_day_cache(cost_cfg.ttl_seconds, d)) {
+    let needs_cache = cfg.show_daily || cfg.show_weekly || cfg.show_monthly || cfg.show_block5h;
+    if let Some(payload) = needs_cache
+        .then(|| data_dir.and_then(|d| fresh_same_day_cache(cost_cfg.ttl_seconds, d)))
+        .flatten()
+    {
         if cfg.show_daily {
             segments.push(render_budget_window(
                 "day",
@@ -1304,6 +1308,7 @@ mod tests {
 
     #[test]
     fn budget_line_omits_session_when_no_session_cost_is_available() {
+        let dir = tempfile::tempdir().unwrap();
         let cfg = BudgetConfig {
             enabled: true,
             show_daily: false,
@@ -1316,10 +1321,34 @@ mod tests {
             &cfg,
             &CostConfig::default(),
             &DisplayConfig::default(),
-            Some(Path::new("/tmp")),
+            Some(dir.path()),
             None
         )
         .is_none());
+    }
+
+    #[test]
+    fn budget_line_skips_the_cache_entirely_when_no_cached_window_is_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            show_daily: false,
+            show_weekly: false,
+            show_monthly: false,
+            show_block5h: false,
+            ..BudgetConfig::default()
+        };
+        budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            Some(1.0),
+        );
+        assert!(
+            !dir.path().join("cost-cache.lock").exists(),
+            "no cached window is enabled, so the cache must never be read or refreshed"
+        );
     }
 
     #[test]
