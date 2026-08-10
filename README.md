@@ -245,10 +245,22 @@ max_archives   = 7         # keep .1.gz … .7.gz
 [claude]
 config_dir          = ""   # "" = $CLAUDE_CONFIG_DIR, else ~/.claude
 auto_compact_window = 0    # 0 = use the built-in 16.5% buffer
+
+[display]
+bar_width          = 10
+threshold_yellow   = 50
+threshold_orange   = 65
+threshold_critical = 80
+show_task          = true
 ```
 
 A relative `log.path` resolves against the data directory, not the
 directory you happen to be in.
+
+`threshold_yellow`, `threshold_orange`, and `threshold_critical` must be
+strictly increasing; if they are not, all three fall back to the defaults
+above. `bar_width` clamps to `1..=100`. `show_task` set to `false` hides the
+active-task segment entirely.
 
 ### The log
 
@@ -277,8 +289,8 @@ Each overrides its config-file counterpart.
 | `FERRISBAR_LOG_PATH` | `log.path` | Log to somewhere else for one session. |
 | `FERRISBAR_LOG_LEVEL` | `log.level` | Turn logging up without editing the file. |
 
-The gauge's thresholds are fixed, and map to how much of your *usable* window
-is spent:
+The gauge's thresholds default to the values above, and map to how much of
+your *usable* window is spent:
 
 | Used | Color | Extra |
 | ---- | ----- | ----- |
