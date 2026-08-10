@@ -48,6 +48,16 @@ fn log_file(home: &Path) -> PathBuf {
     data_dir(home).join("logs").join("ferrisbar.jsonl")
 }
 
+/// A path's `Display` form, escaped for embedding in a JSON or TOML
+/// double-quoted string literal (both treat a lone `\` as the start of an
+/// escape sequence, so it must become `\\`). A Windows tempdir path
+/// contains backslashes and Unix paths never do, so this is a no-op there —
+/// but skipping it on Windows produces a string the JSON/TOML parser
+/// rejects outright, which one test discovered by rendering nothing at all.
+fn escape_for_string_literal(path: &Path) -> String {
+    path.display().to_string().replace('\\', "\\\\")
+}
+
 /// Env vars whose presence in the developer's real shell could route a
 /// spawned child into real state instead of a tempdir. `FERRISBAR_LOG_PATH`
 /// and `FERRISBAR_LOG_LEVEL` beat the config file outright (`src/main.rs`),
@@ -185,7 +195,7 @@ fn git_branch_rendered_after_the_folder_name() {
 
     let payload = format!(
         r#"{{"model":{{"display_name":"Sonnet"}},"workspace":{{"current_dir":"{}"}}}}"#,
-        project_dir.display()
+        escape_for_string_literal(&project_dir)
     );
     let empty_todos = tempfile::tempdir().unwrap();
     let out = run_with_env(
@@ -530,7 +540,7 @@ fn env_var_beats_the_config_file_for_the_claude_dir() {
         dir.join("config.toml"),
         format!(
             "[claude]\nconfig_dir = \"{}\"\n",
-            home.path().join("from-file").display()
+            escape_for_string_literal(&home.path().join("from-file"))
         ),
     )
     .unwrap();
