@@ -19,8 +19,9 @@ pub fn compose_statusline(
     let ctx_seg = if ctx.is_empty() {
         String::new()
     } else {
-        let cost_seg =
-            session_cost_usd.map_or_else(String::new, |c| format!(" {DIM}${c:.2}{RESET}"));
+        let cost_seg = session_cost_usd.map_or_else(String::new, |c| {
+            format!(" {DIM}│{RESET} {DIM}${c:.2}{RESET}")
+        });
         format!(" {DIM}│{RESET}{ctx}{cost_seg}")
     };
     match task {
@@ -93,7 +94,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "{DIM}Claude{RESET} │ {DIM}myproject{RESET} {DIM}│{RESET}{ctx} {DIM}$0.42{RESET}"
+                "{DIM}Claude{RESET} │ {DIM}myproject{RESET} {DIM}│{RESET}{ctx} {DIM}│{RESET} {DIM}$0.42{RESET}"
             )
         );
     }

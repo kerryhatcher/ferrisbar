@@ -181,7 +181,7 @@ fn session_cost_rendered_next_to_context_bar() {
     );
     assert_eq!(
         out,
-        "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m \x1b[2m$0.42\x1b[0m"
+        "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m \x1b[2m│\x1b[0m \x1b[2m$0.42\x1b[0m"
     );
 }
 
