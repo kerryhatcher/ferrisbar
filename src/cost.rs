@@ -347,7 +347,16 @@ fn parse_iso8601_utc(s: &str) -> Option<i64> {
     let hour: i64 = s.get(11..13)?.parse().ok()?;
     let minute: i64 = s.get(14..16)?.parse().ok()?;
     let second: i64 = s.get(17..19)?.parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+    {
+        // An out-of-range time component (e.g. hour 99) would otherwise
+        // still produce *a* Unix timestamp — just a wrong one, silently
+        // shifting the record into the wrong budget window rather than
+        // excluding it the way a genuinely malformed record should be.
         return None;
     }
     Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
@@ -643,8 +652,10 @@ fn pct_of_budget(spent: f64, limit: f64) -> u8 {
 /// when the feature is off or no window has anything to show yet. Session
 /// comes from the live payload and needs no cache; the other four windows
 /// share the same on-disk aggregate as `daily_chip` (see
-/// `fresh_same_day_cache`), so a stale cache omits them rather than
-/// blocking on a fresh transcript scan.
+/// `fresh_same_day_cache`), which still returns a same-day cache even
+/// while it's stale by TTL (that only triggers a background refresh, never
+/// a blocking one) — those four windows are omitted only when there is no
+/// cache yet, or the cached date doesn't match today.
 pub fn budget_line(
     cfg: &BudgetConfig,
     cost_cfg: &CostConfig,
@@ -1064,6 +1075,17 @@ mod tests {
         assert_eq!(parse_iso8601_utc("not a timestamp"), None);
         assert_eq!(parse_iso8601_utc("2026-13-01T00:00:00Z"), None); // month 13
         assert_eq!(parse_iso8601_utc("2026-08-32T00:00:00Z"), None); // day 32
+    }
+
+    #[test]
+    fn parse_iso8601_utc_rejects_out_of_range_time_components() {
+        // An out-of-range hour/minute/second must not silently produce a
+        // wrong-but-valid-looking timestamp that shifts the record into the
+        // wrong budget window.
+        assert_eq!(parse_iso8601_utc("2026-08-10T99:00:00Z"), None); // hour 99
+        assert_eq!(parse_iso8601_utc("2026-08-10T00:99:00Z"), None); // minute 99
+        assert_eq!(parse_iso8601_utc("2026-08-10T00:00:99Z"), None); // second 99
+        assert!(parse_iso8601_utc("2026-08-10T23:59:59Z").is_some());
     }
 
     #[test]
