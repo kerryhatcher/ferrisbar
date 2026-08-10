@@ -51,6 +51,10 @@ auto-compaction hits.
   gauge, and today's total across every session with a per-model split on
   its own line, estimated from your local transcripts. [Configurable, and
   never a billing source of record](#-configuration).
+- **📅 Budget windows** — opt-in mini progress bars against $ limits you set
+  for the current session, today, this week, this month, and the rolling
+  5-hour rate-limit block, color-coded the same as the context gauge.
+  [Off by default](#-configuration).
 - **⚡ Fast and dependency-light** — one [Rust](https://www.rust-lang.org)
   binary and four runtime crates ([serde](https://serde.rs) and
   [serde_json](https://docs.rs/serde_json) for the payload,
@@ -274,6 +278,19 @@ show_session      = true
 show_daily        = true
 ttl_seconds       = 90
 breakdown_min_usd = 0.005
+
+[budget]
+enabled      = false
+weekly_usd   = 100.0
+workdays     = 5
+session_usd  = 5.0
+block5h_usd  = 15.0
+bar_width    = 6
+show_session = true
+show_daily   = true
+show_weekly  = true
+show_monthly = true
+show_block5h = true
 ```
 
 A relative `log.path` resolves against the data directory, not the
@@ -299,6 +316,22 @@ so it is cached and refreshed by a short-lived detached background process;
 (`0` disables the daily line and its background process entirely).
 `breakdown_min_usd` folds per-model entries under that amount into the total
 without listing them.
+
+`[budget]` adds a third line: a mini progress bar per window, colored by the
+same yellow/orange/critical thresholds as the context gauge, showing how much
+of a $ limit you've spent. It's **off by default** (`enabled = false`) —
+`weekly_usd` and the rest are placeholders, not your real plan limits, until
+you set them. `weekly_usd` is the anchor: `daily = weekly_usd / workdays` and
+`monthly = weekly_usd × 4` derive from it automatically, so raising your
+weekly number raises daily and monthly too. `session_usd` and `block5h_usd`
+are set independently since neither is a natural fraction of a week —
+`block5h_usd` in particular is worth setting to match your actual Claude plan
+limit, since the rolling 5-hour window it tracks is the one that predicts
+"you're about to get rate-limited," not just "you're spending money." Each
+window has its own `show_*` toggle; the daily/weekly/monthly/block5h bars
+share the daily-cost cache above, so they're subject to the same `ttl_seconds`
+and appear only once that cache has a same-day value to show. `bar_width` sets
+the width of each mini bar, independent of `display.bar_width`.
 
 ### The log
 

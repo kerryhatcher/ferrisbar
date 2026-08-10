@@ -20,6 +20,16 @@ pub struct CachePayload {
     pub date: String,
     pub total_usd: f64,
     pub by_model: Vec<(String, f64)>,
+    /// Budget-window totals sharing this same cache and refresh cycle — see
+    /// `cost::aggregate_windows`. `#[serde(default)]` so a cache file
+    /// written before these fields existed still loads (as 0.0, which
+    /// `budget_line` treats the same as "nothing spent yet").
+    #[serde(default)]
+    pub weekly_usd: f64,
+    #[serde(default)]
+    pub monthly_usd: f64,
+    #[serde(default)]
+    pub block5h_usd: f64,
 }
 
 /// A lock older than this is assumed to belong to a refresh that hung or
@@ -161,6 +171,9 @@ mod tests {
             date: "2026-08-10".to_string(),
             total_usd: 1.23,
             by_model: vec![("claude-sonnet-5".to_string(), 1.23)],
+            weekly_usd: 4.56,
+            monthly_usd: 20.0,
+            block5h_usd: 0.78,
         }
     }
 
