@@ -34,6 +34,20 @@ ttl_seconds       = 90     # daily total cache lifetime in seconds; a stale
                             # the daily line entirely
 breakdown_min_usd = 0.005  # per-model entries below this are folded into the
                             # total rather than listed individually
+
+[budget]
+enabled      = false  # off by default: the $ limits below are placeholders,
+                        # not your real plan limits
+weekly_usd   = 100.0   # anchor budget; daily and monthly derive from it
+workdays     = 5       # divisor for the derived daily budget (weekly/workdays)
+session_usd  = 5.0      # explicit: a single session has no natural week fraction
+block5h_usd  = 15.0     # explicit: the rolling 5-hour rate-limit window
+bar_width    = 6        # width of each mini progress bar
+show_session = true
+show_daily   = true
+show_weekly  = true
+show_monthly = true
+show_block5h = true
 "#;
 
 pub const MIN_MAX_SIZE_BYTES: u64 = 4096;
@@ -103,12 +117,63 @@ impl Default for CostConfig {
     }
 }
 
+// Five independent per-window on/off toggles (plus `enabled`), not a state
+// machine: each budget window is shown or hidden on its own, with no
+// exclusivity between them.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetConfig {
+    pub enabled: bool,
+    pub weekly_usd: f64,
+    pub workdays: f64,
+    pub session_usd: f64,
+    pub block5h_usd: f64,
+    pub bar_width: u8,
+    pub show_session: bool,
+    pub show_daily: bool,
+    pub show_weekly: bool,
+    pub show_monthly: bool,
+    pub show_block5h: bool,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            weekly_usd: 100.0,
+            workdays: 5.0,
+            session_usd: 5.0,
+            block5h_usd: 15.0,
+            bar_width: 6,
+            show_session: true,
+            show_daily: true,
+            show_weekly: true,
+            show_monthly: true,
+            show_block5h: true,
+        }
+    }
+}
+
+impl BudgetConfig {
+    /// `weekly_usd` is the configured anchor; daily and monthly are always
+    /// derived from it (Decision 0007 in the design this mirrors), so there
+    /// is no separate `daily_usd`/`monthly_usd` field to fall out of sync.
+    pub fn daily_usd(&self) -> f64 {
+        self.weekly_usd / self.workdays
+    }
+
+    pub fn monthly_usd(&self) -> f64 {
+        self.weekly_usd * 4.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub log: LogConfig,
     pub claude: ClaudeConfig,
     pub display: DisplayConfig,
     pub cost: CostConfig,
+    pub budget: BudgetConfig,
 }
 
 impl Default for LogConfig {
@@ -143,6 +208,7 @@ impl Default for Config {
             claude: ClaudeConfig::default(),
             display: DisplayConfig::default(),
             cost: CostConfig::default(),
+            budget: BudgetConfig::default(),
         }
     }
 }
@@ -282,9 +348,46 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
                     .unwrap_or(defaults_cost.breakdown_min_usd),
             }
         },
+        budget: parse_budget(&table),
     };
 
     (config, Vec::new())
+}
+
+/// Split out of `from_toml_str` purely to keep that function under clippy's
+/// line-count lint — the mapping itself is the same one-field-per-key
+/// pattern as `cost`'s and `display`'s inline blocks above.
+fn parse_budget(table: &toml::Table) -> BudgetConfig {
+    let budget = section(table, "budget");
+    let defaults = BudgetConfig::default();
+
+    let bar_width = get_integer(budget, "bar_width")
+        .and_then(|v| u8::try_from(v).ok())
+        .map_or(defaults.bar_width, |v| {
+            v.clamp(MIN_BAR_WIDTH, MAX_BAR_WIDTH)
+        });
+
+    BudgetConfig {
+        enabled: get_bool(budget, "enabled").unwrap_or(defaults.enabled),
+        weekly_usd: get_number(budget, "weekly_usd")
+            .filter(|v| *v > 0.0)
+            .unwrap_or(defaults.weekly_usd),
+        workdays: get_number(budget, "workdays")
+            .filter(|v| *v > 0.0)
+            .unwrap_or(defaults.workdays),
+        session_usd: get_number(budget, "session_usd")
+            .filter(|v| *v > 0.0)
+            .unwrap_or(defaults.session_usd),
+        block5h_usd: get_number(budget, "block5h_usd")
+            .filter(|v| *v > 0.0)
+            .unwrap_or(defaults.block5h_usd),
+        bar_width,
+        show_session: get_bool(budget, "show_session").unwrap_or(defaults.show_session),
+        show_daily: get_bool(budget, "show_daily").unwrap_or(defaults.show_daily),
+        show_weekly: get_bool(budget, "show_weekly").unwrap_or(defaults.show_weekly),
+        show_monthly: get_bool(budget, "show_monthly").unwrap_or(defaults.show_monthly),
+        show_block5h: get_bool(budget, "show_block5h").unwrap_or(defaults.show_block5h),
+    }
 }
 
 /// Reads the config file, creating it from `TEMPLATE` when absent.
@@ -626,5 +729,91 @@ mod tests {
         assert!(!c.cost.show_daily);
         assert!(c.cost.show_session);
         assert_eq!(c.cost.ttl_seconds, 90);
+    }
+
+    #[test]
+    fn budget_defaults_match_the_documented_values() {
+        let b = BudgetConfig::default();
+        assert!(!b.enabled);
+        assert!((b.weekly_usd - 100.0).abs() < f64::EPSILON);
+        assert!((b.workdays - 5.0).abs() < f64::EPSILON);
+        assert!((b.session_usd - 5.0).abs() < f64::EPSILON);
+        assert!((b.block5h_usd - 15.0).abs() < f64::EPSILON);
+        assert_eq!(b.bar_width, 6);
+        assert!(
+            b.show_session && b.show_daily && b.show_weekly && b.show_monthly && b.show_block5h
+        );
+    }
+
+    #[test]
+    fn budget_derived_amounts_follow_the_weekly_anchor() {
+        let b = BudgetConfig {
+            weekly_usd: 100.0,
+            workdays: 5.0,
+            ..BudgetConfig::default()
+        };
+        assert!((b.daily_usd() - 20.0).abs() < f64::EPSILON);
+        assert!((b.monthly_usd() - 400.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn template_includes_budget_block() {
+        assert!(TEMPLATE.contains("[budget]"));
+        assert!(TEMPLATE.contains("weekly_usd"));
+        assert!(TEMPLATE.contains("workdays"));
+        assert!(TEMPLATE.contains("session_usd"));
+        assert!(TEMPLATE.contains("block5h_usd"));
+    }
+
+    #[test]
+    fn template_round_trips_including_budget() {
+        let (c, warnings) = from_toml_str(TEMPLATE);
+        assert!(warnings.is_empty());
+        assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn budget_values_are_read_from_toml() {
+        let (c, _) = from_toml_str(
+            "[budget]\nenabled = true\nweekly_usd = 200.0\nworkdays = 4\n\
+             session_usd = 10.0\nblock5h_usd = 25.0\nbar_width = 8\n\
+             show_weekly = false\n",
+        );
+        assert!(c.budget.enabled);
+        assert!((c.budget.weekly_usd - 200.0).abs() < f64::EPSILON);
+        assert!((c.budget.workdays - 4.0).abs() < f64::EPSILON);
+        assert!((c.budget.session_usd - 10.0).abs() < f64::EPSILON);
+        assert!((c.budget.block5h_usd - 25.0).abs() < f64::EPSILON);
+        assert_eq!(c.budget.bar_width, 8);
+        assert!(!c.budget.show_weekly);
+        assert!(c.budget.show_daily, "sibling toggles still apply");
+    }
+
+    #[test]
+    fn budget_non_positive_amounts_fall_back_to_defaults() {
+        let (c, _) = from_toml_str(
+            "[budget]\nweekly_usd = 0\nworkdays = -1\nsession_usd = -5.0\nblock5h_usd = 0\n",
+        );
+        let d = BudgetConfig::default();
+        assert!((c.budget.weekly_usd - d.weekly_usd).abs() < f64::EPSILON);
+        assert!((c.budget.workdays - d.workdays).abs() < f64::EPSILON);
+        assert!((c.budget.session_usd - d.session_usd).abs() < f64::EPSILON);
+        assert!((c.budget.block5h_usd - d.block5h_usd).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_bar_width_clamps_to_range() {
+        let (zero, _) = from_toml_str("[budget]\nbar_width = 0\n");
+        assert_eq!(zero.budget.bar_width, MIN_BAR_WIDTH);
+        let (huge, _) = from_toml_str("[budget]\nbar_width = 200\n");
+        assert_eq!(huge.budget.bar_width, MAX_BAR_WIDTH);
+    }
+
+    #[test]
+    fn budget_partial_block_fills_in_defaults() {
+        let (c, _) = from_toml_str("[budget]\nenabled = true\n");
+        assert!(c.budget.enabled);
+        assert!((c.budget.weekly_usd - 100.0).abs() < f64::EPSILON);
+        assert!(c.budget.show_session);
     }
 }

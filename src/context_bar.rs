@@ -18,7 +18,9 @@ pub fn compute_used(remaining_percentage: f64, total_tokens: f64, acw_env: f64) 
     }
 }
 
-fn render_bar(used: u8, width: usize) -> String {
+/// Shared with `cost::budget_line`'s mini per-window bars, which use the
+/// same filled/empty block-character rendering at a smaller width.
+pub fn render_bar(used: u8, width: usize) -> String {
     let filled = ((used as usize) * width / 100).min(width);
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }

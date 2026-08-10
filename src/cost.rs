@@ -13,8 +13,12 @@
 //! re-invocation spawned off the render path by `cost_cache::spawn_refresh`,
 //! and read from `cost_cache`'s small on-disk cache everywhere else.
 
-use crate::layout::{DIM, GREEN, RESET};
-use crate::{config::CostConfig, cost_cache};
+use crate::context_bar;
+use crate::layout::{BLINK_RED, DIM, GREEN, ORANGE, RESET, YELLOW};
+use crate::{
+    config::{BudgetConfig, CostConfig, DisplayConfig},
+    cost_cache,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -186,6 +190,11 @@ struct ParsedRecord {
     usage: Usage,
     model: String,
     date: String,
+    /// `None` when `timestamp` doesn't parse as the expected
+    /// `YYYY-MM-DDTHH:MM:SS...` shape — such a record still counts toward
+    /// `date`-keyed daily aggregation but is excluded from the rolling/
+    /// calendar budget windows, which need a real instant to compare against.
+    timestamp_unix: Option<i64>,
     dedup_key: Option<String>,
 }
 
@@ -225,6 +234,7 @@ fn parse_line(line: &str) -> Option<ParsedRecord> {
     Some(ParsedRecord {
         usage,
         model: message.model.unwrap_or_default(),
+        timestamp_unix: parse_iso8601_utc(&timestamp),
         date,
         dedup_key,
     })
@@ -300,6 +310,71 @@ fn today_utc_date(now_unix_secs: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Inverse of `civil_from_days` — a proleptic Gregorian (year, month, day)
+/// to days-since-epoch, the other half of Howard Hinnant's algorithm. Needed
+/// to turn "the 1st of this month" back into a day count for the monthly
+/// budget window's start boundary.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+const fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64; // [0, 399]
+    let mp = (if m > 2 { m - 3 } else { m + 9 }) as u64; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + d as u64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe as i64 - 719_468
+}
+
+/// Parses the `YYYY-MM-DDTHH:MM:SS` prefix of a transcript timestamp (the
+/// fractional-second and `Z` suffix, if present, are ignored) into Unix
+/// seconds. `None` for anything that doesn't match — transcript timestamps
+/// are always UTC, so there is no offset to handle, but a record with a
+/// different shape must degrade to "not counted" rather than panic.
+fn parse_iso8601_utc(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    let hour: i64 = s.get(11..13)?.parse().ok()?;
+    let minute: i64 = s.get(14..16)?.parse().ok()?;
+    let second: i64 = s.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// Start of the Monday-anchored ISO week containing `now`. Epoch day 0
+/// (1970-01-01) was a Thursday, so `(day + 3).rem_euclid(7)` gives days
+/// since the preceding Monday (Monday = 0 ... Sunday = 6).
+const fn start_of_week(now: i64) -> i64 {
+    let day = now.div_euclid(86_400);
+    let since_monday = (day + 3).rem_euclid(7);
+    (day - since_monday) * 86_400
+}
+
+/// Start of the calendar month containing `now`, in UTC.
+const fn start_of_month(now: i64) -> i64 {
+    let (y, m, _) = civil_from_days(now.div_euclid(86_400));
+    days_from_civil(y, m, 1) * 86_400
+}
+
+/// Start of the rolling 5-hour rate-limit block ending at `now` — unlike the
+/// calendar windows above, this one always slides rather than resetting on
+/// a boundary.
+const fn start_of_block5h(now: i64) -> i64 {
+    now - 5 * 3600
+}
+
 fn now_unix_secs() -> i64 {
     // Safe: `as_secs` cannot exceed i64::MAX for any date this program will
     // ever run on.
@@ -317,10 +392,32 @@ pub struct DailyTotal {
     pub by_model: Vec<(String, f64)>,
 }
 
-fn aggregate_today(transcripts_root: &Path, today: &str) -> DailyTotal {
+/// The daily total plus the three longer/shorter budget windows (Decision
+/// 0004/0007 in the design this mirrors: session, daily, weekly/monthly,
+/// and the rolling 5-hour rate-limit block), all from one transcript pass.
+pub struct WindowTotals {
+    pub daily: DailyTotal,
+    pub weekly_usd: f64,
+    pub monthly_usd: f64,
+    pub block5h_usd: f64,
+}
+
+/// One pass over every transcript line, bucketing each usage-bearing
+/// record's cost into whichever windows its timestamp falls in. `today`
+/// still keys the daily total by date string (matching the on-disk cache's
+/// existing staleness check); the other three windows compare directly
+/// against `now`-derived boundaries.
+fn aggregate_windows(transcripts_root: &Path, now: i64, today: &str) -> WindowTotals {
     let pricing = load_pricing();
-    let mut total = 0.0_f64;
-    let mut by_model: HashMap<String, f64> = HashMap::new();
+    let week_start = start_of_week(now);
+    let month_start = start_of_month(now);
+    let block_start = start_of_block5h(now);
+
+    let mut daily_total = 0.0_f64;
+    let mut daily_by_model: HashMap<String, f64> = HashMap::new();
+    let mut weekly_total = 0.0_f64;
+    let mut monthly_total = 0.0_f64;
+    let mut block5h_total = 0.0_f64;
     let mut seen = std::collections::HashSet::new();
 
     for path in discover_transcripts(transcripts_root) {
@@ -356,25 +453,45 @@ fn aggregate_today(transcripts_root: &Path, today: &str) -> DailyTotal {
             let Some(rec) = parse_line(&line) else {
                 continue;
             };
-            if rec.date != today {
-                continue;
-            }
-            if let Some(key) = rec.dedup_key {
-                if !seen.insert(key) {
+            if let Some(key) = &rec.dedup_key {
+                if !seen.insert(key.clone()) {
                     continue; // already counted from another transcript
                 }
             }
             let cost = cost_for(&rec.usage, &rec.model, &pricing);
-            if cost > 0.0 {
-                total += cost;
-                *by_model.entry(rec.model).or_insert(0.0) += cost;
+            if cost <= 0.0 {
+                continue;
+            }
+            if rec.date == today {
+                daily_total += cost;
+                *daily_by_model.entry(rec.model.clone()).or_insert(0.0) += cost;
+            }
+            let Some(ts) = rec.timestamp_unix else {
+                continue; // unparsable timestamp: daily still counted above, rolling windows can't be
+            };
+            if ts > now {
+                continue; // clock skew or a test fixture dated after `now`; never count future usage
+            }
+            if ts >= week_start {
+                weekly_total += cost;
+            }
+            if ts >= month_start {
+                monthly_total += cost;
+            }
+            if ts >= block_start {
+                block5h_total += cost;
             }
         }
     }
 
-    DailyTotal {
-        total_usd: total,
-        by_model: by_model.into_iter().collect(),
+    WindowTotals {
+        daily: DailyTotal {
+            total_usd: daily_total,
+            by_model: daily_by_model.into_iter().collect(),
+        },
+        weekly_usd: weekly_total,
+        monthly_usd: monthly_total,
+        block5h_usd: block5h_total,
     }
 }
 
@@ -420,15 +537,49 @@ fn format_daily_chip(daily: &DailyTotal, min_usd: f64) -> String {
 /// and the lock is always released so a stuck refresh cannot wedge every
 /// later render out of ever retrying.
 pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path) {
-    let today = today_utc_date(now_unix_secs());
-    let daily = aggregate_today(transcripts_root, &today);
+    let now = now_unix_secs();
+    let today = today_utc_date(now);
+    let windows = aggregate_windows(transcripts_root, now, &today);
     let payload = cost_cache::CachePayload {
         date: today,
-        total_usd: daily.total_usd,
-        by_model: daily.by_model,
+        total_usd: windows.daily.total_usd,
+        by_model: windows.daily.by_model,
+        weekly_usd: windows.weekly_usd,
+        monthly_usd: windows.monthly_usd,
+        block5h_usd: windows.block5h_usd,
     };
     let _ = cost_cache::write_cache(data_dir, &payload);
     cost_cache::release_lock(data_dir);
+}
+
+/// Reads the on-disk cache, honoring `ttl_seconds` for staleness (which
+/// triggers a background `cost_cache::spawn_refresh`, never a blocking
+/// recompute), and discards it if it's dated to a previous day — the day
+/// boundary is also the week and month boundary, so this one check covers
+/// invalidating the daily, weekly, and monthly windows alike. `None` covers
+/// every reason there's nothing usable yet: disabled TTL, no cache written,
+/// or a stale previous-day cache still awaiting its refresh.
+fn fresh_same_day_cache(ttl_seconds: u64, data_dir: &Path) -> Option<cost_cache::CachePayload> {
+    if ttl_seconds == 0 {
+        return None;
+    }
+    let today = today_utc_date(now_unix_secs());
+    let cached = cost_cache::read_cache(data_dir);
+    // A cache dated to a previous day is stale regardless of its age: right
+    // after the UTC day boundary it can still be well under `ttl_seconds`
+    // old, and without this check the chip would stay hidden until the TTL
+    // naturally elapses instead of refreshing right away.
+    let stale = cached
+        .as_ref()
+        .is_none_or(|(payload, age)| age.as_secs() >= ttl_seconds || payload.date != today);
+    if stale {
+        cost_cache::spawn_refresh(data_dir);
+    }
+    let (payload, _age) = cached?;
+    if payload.date != today {
+        return None; // cache is from a previous day; wait for the refresh
+    }
+    Some(payload)
 }
 
 /// The daily cost chip for the statusline's second line, or `None` when the
@@ -440,31 +591,127 @@ pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path) {
 /// (a detached, non-blocking re-invocation of this binary) and this render
 /// still uses whatever cache is currently on disk, even if stale.
 pub fn daily_chip(cfg: &CostConfig, data_dir: Option<&Path>) -> Option<String> {
-    if !cfg.show_daily || cfg.ttl_seconds == 0 {
+    if !cfg.show_daily {
         return None;
     }
-    let data_dir = data_dir?;
-    let today = today_utc_date(now_unix_secs());
-    let cached = cost_cache::read_cache(data_dir);
-    // A cache dated to a previous day is stale regardless of its age: right
-    // after the UTC day boundary it can still be well under `ttl_seconds`
-    // old, and without this check the chip would stay hidden until the TTL
-    // naturally elapses instead of refreshing right away.
-    let stale = cached
-        .as_ref()
-        .is_none_or(|(payload, age)| age.as_secs() >= cfg.ttl_seconds || payload.date != today);
-    if stale {
-        cost_cache::spawn_refresh(data_dir);
-    }
-    let (payload, _age) = cached?;
-    if payload.date != today {
-        return None; // cache is from a previous day; wait for the refresh
-    }
+    let payload = fresh_same_day_cache(cfg.ttl_seconds, data_dir?)?;
     let daily = DailyTotal {
         total_usd: payload.total_usd,
         by_model: payload.by_model,
     };
     Some(format_daily_chip(&daily, cfg.breakdown_min_usd))
+}
+
+/// A tiered-color mini progress bar for one budget window: `label` dimmed,
+/// then the bar and the used-of-limit percentage colored by how close
+/// `spent` is to `limit`, reusing `context_bar`'s block-character renderer
+/// and `display`'s existing yellow/orange/critical thresholds.
+fn render_budget_window(
+    label: &str,
+    spent: f64,
+    limit: f64,
+    width: u8,
+    display: &DisplayConfig,
+) -> String {
+    let pct = pct_of_budget(spent, limit);
+    let bar = context_bar::render_bar(pct.min(100), width as usize);
+    let colored = if pct < display.threshold_yellow {
+        format!("{GREEN}{bar} {pct}%{RESET}")
+    } else if pct < display.threshold_orange {
+        format!("{YELLOW}{bar} {pct}%{RESET}")
+    } else if pct < display.threshold_critical {
+        format!("{ORANGE}{bar} {pct}%{RESET}")
+    } else {
+        format!("{BLINK_RED}{bar} {pct}%{RESET}")
+    };
+    format!("{DIM}{label}{RESET} {colored}")
+}
+
+/// Percentage of `limit` that `spent` represents, clamped to fit a `u8` —
+/// spending can run well past the limit, but the bar and label only need to
+/// communicate "how far past", not the exact multiple.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn pct_of_budget(spent: f64, limit: f64) -> u8 {
+    if limit <= 0.0 || spent <= 0.0 {
+        return 0;
+    }
+    (spent / limit * 100.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// The budget-windows line: one mini progress bar per enabled window
+/// (session, daily, weekly, monthly, the rolling 5-hour block), or `None`
+/// when the feature is off or no window has anything to show yet. Session
+/// comes from the live payload and needs no cache; the other four windows
+/// share the same on-disk aggregate as `daily_chip` (see
+/// `fresh_same_day_cache`), so a stale cache omits them rather than
+/// blocking on a fresh transcript scan.
+pub fn budget_line(
+    cfg: &BudgetConfig,
+    cost_cfg: &CostConfig,
+    display: &DisplayConfig,
+    data_dir: Option<&Path>,
+    session_cost_usd: Option<f64>,
+) -> Option<String> {
+    if !cfg.enabled {
+        return None;
+    }
+    let mut segments = Vec::new();
+
+    if cfg.show_session {
+        if let Some(spent) = session_cost_usd {
+            segments.push(render_budget_window(
+                "sess",
+                spent,
+                cfg.session_usd,
+                cfg.bar_width,
+                display,
+            ));
+        }
+    }
+
+    if let Some(payload) = data_dir.and_then(|d| fresh_same_day_cache(cost_cfg.ttl_seconds, d)) {
+        if cfg.show_daily {
+            segments.push(render_budget_window(
+                "day",
+                payload.total_usd,
+                cfg.daily_usd(),
+                cfg.bar_width,
+                display,
+            ));
+        }
+        if cfg.show_weekly {
+            segments.push(render_budget_window(
+                "wk",
+                payload.weekly_usd,
+                cfg.weekly_usd,
+                cfg.bar_width,
+                display,
+            ));
+        }
+        if cfg.show_monthly {
+            segments.push(render_budget_window(
+                "mo",
+                payload.monthly_usd,
+                cfg.monthly_usd(),
+                cfg.bar_width,
+                display,
+            ));
+        }
+        if cfg.show_block5h {
+            segments.push(render_budget_window(
+                "5h",
+                payload.block5h_usd,
+                cfg.block5h_usd,
+                cfg.bar_width,
+                display,
+            ));
+        }
+    }
+
+    if segments.is_empty() {
+        return None;
+    }
+    Some(segments.join(&format!(" {DIM}│{RESET} ")))
 }
 
 #[cfg(test)]
@@ -649,10 +896,13 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_today_sums_matching_dates_across_files_and_dedups() {
+    fn aggregate_windows_sums_matching_dates_across_files_and_dedups() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("proj");
         std::fs::create_dir_all(&sub).unwrap();
+        // 5h before this is 10:31, so the block5h window below excludes the
+        // 10:00 record and keeps only the 11:00 one.
+        let now = parse_iso8601_utc("2026-08-10T15:31:00Z").unwrap();
 
         write_transcript(
             &sub,
@@ -696,18 +946,26 @@ mod tests {
             ],
         );
 
-        let daily = aggregate_today(dir.path(), "2026-08-10");
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
 
         // sonnet-5 input rate is $2/Mtok, so one deduped 1M-token message = $2.
         // opus-4-8 input rate is $5/Mtok, so one 1M-token message = $5.
-        assert!((daily.total_usd - 7.0).abs() < 1e-9);
-        assert_eq!(daily.by_model.len(), 2);
+        assert!((windows.daily.total_usd - 7.0).abs() < 1e-9);
+        assert_eq!(windows.daily.by_model.len(), 2);
+        // 08-09 falls outside today (excluded above) and outside this week
+        // (Aug 10 2026 is a Monday, so the week starts on it), but it is
+        // still within the same calendar month.
+        assert!((windows.weekly_usd - 7.0).abs() < 1e-9);
+        assert!((windows.monthly_usd - 9.0).abs() < 1e-9);
+        assert!((windows.block5h_usd - 5.0).abs() < 1e-9); // only the 11:00 record is within 5h of `now`
     }
 
     #[test]
-    fn aggregate_today_keeps_reading_after_a_malformed_line() {
+    fn aggregate_windows_keeps_reading_after_a_malformed_line() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a.jsonl");
+        let sub = dir.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let path = sub.join("a.jsonl");
         let mut bytes = vec![0xFF_u8, 0xFE, b'\n']; // not valid UTF-8
         bytes.extend_from_slice(
             usage_line(
@@ -721,9 +979,10 @@ mod tests {
         );
         std::fs::write(&path, bytes).unwrap();
 
-        let daily = aggregate_today(dir.path(), "2026-08-10");
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
         assert!(
-            (daily.total_usd - 2.0).abs() < 1e-9,
+            (windows.daily.total_usd - 2.0).abs() < 1e-9,
             "the valid line after the malformed one must still be counted"
         );
     }
@@ -744,10 +1003,91 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_today_ignores_unreadable_root() {
-        let daily = aggregate_today(Path::new("/does/not/exist"), "2026-08-10");
-        assert_eq!(daily.total_usd, 0.0);
-        assert!(daily.by_model.is_empty());
+    fn aggregate_windows_ignores_unreadable_root() {
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
+        let windows = aggregate_windows(Path::new("/does/not/exist"), now, "2026-08-10");
+        assert_eq!(windows.daily.total_usd, 0.0);
+        assert!(windows.daily.by_model.is_empty());
+        assert_eq!(windows.weekly_usd, 0.0);
+        assert_eq!(windows.monthly_usd, 0.0);
+        assert_eq!(windows.block5h_usd, 0.0);
+    }
+
+    #[test]
+    fn aggregate_windows_excludes_records_outside_each_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap(); // a Monday
+
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[
+                // Last month — outside daily/weekly/monthly/block5h alike.
+                &usage_line(
+                    "2026-07-02T10:00:00Z",
+                    "claude-sonnet-5",
+                    "req_old",
+                    "msg_old",
+                    1_000_000,
+                ),
+            ],
+        );
+
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        assert_eq!(windows.daily.total_usd, 0.0);
+        assert_eq!(windows.weekly_usd, 0.0);
+        assert_eq!(windows.monthly_usd, 0.0);
+        assert_eq!(windows.block5h_usd, 0.0);
+    }
+
+    #[test]
+    fn days_from_civil_is_the_inverse_of_civil_from_days() {
+        for days in [0, 11_017, 19_000, -1, 20_675] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(days_from_civil(y, m, d), days);
+        }
+    }
+
+    #[test]
+    fn parse_iso8601_utc_parses_a_standard_transcript_timestamp() {
+        assert_eq!(
+            parse_iso8601_utc("2026-08-10T16:56:48.920Z"),
+            Some(20_675 * 86_400 + 16 * 3600 + 56 * 60 + 48)
+        );
+    }
+
+    #[test]
+    fn parse_iso8601_utc_rejects_malformed_input() {
+        assert_eq!(parse_iso8601_utc(""), None);
+        assert_eq!(parse_iso8601_utc("not a timestamp"), None);
+        assert_eq!(parse_iso8601_utc("2026-13-01T00:00:00Z"), None); // month 13
+        assert_eq!(parse_iso8601_utc("2026-08-32T00:00:00Z"), None); // day 32
+    }
+
+    #[test]
+    fn start_of_week_anchors_to_the_preceding_monday() {
+        // 2026-08-10 is a Monday.
+        let monday = parse_iso8601_utc("2026-08-10T00:00:00Z").unwrap();
+        let mid_week = parse_iso8601_utc("2026-08-13T15:00:00Z").unwrap();
+        let next_monday = parse_iso8601_utc("2026-08-17T00:00:00Z").unwrap();
+        assert_eq!(start_of_week(mid_week), monday);
+        assert_eq!(start_of_week(monday), monday);
+        assert_eq!(start_of_week(next_monday), next_monday);
+    }
+
+    #[test]
+    fn start_of_month_anchors_to_the_first() {
+        let first = parse_iso8601_utc("2026-08-01T00:00:00Z").unwrap();
+        let mid_month = parse_iso8601_utc("2026-08-27T09:00:00Z").unwrap();
+        assert_eq!(start_of_month(mid_month), first);
+    }
+
+    #[test]
+    fn start_of_block5h_is_five_hours_before_now() {
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
+        assert_eq!(start_of_block5h(now), now - 5 * 3600);
     }
 
     #[test]
@@ -828,6 +1168,7 @@ mod tests {
             date: today_utc_date(now_unix_secs()),
             total_usd: 4.2,
             by_model: vec![("claude-sonnet-5".to_string(), 4.2)],
+            ..cost_cache::CachePayload::default()
         };
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
@@ -843,6 +1184,7 @@ mod tests {
             date: "2000-01-01".to_string(),
             total_usd: 4.2,
             by_model: Vec::new(),
+            ..cost_cache::CachePayload::default()
         };
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
@@ -856,6 +1198,7 @@ mod tests {
             date: "2000-01-01".to_string(), // wrong day, but just written: well under any TTL
             total_usd: 4.2,
             by_model: Vec::new(),
+            ..cost_cache::CachePayload::default()
         };
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
@@ -877,5 +1220,162 @@ mod tests {
 
         assert!(dir.path().join("cost-cache.json").exists());
         assert!(!dir.path().join("cost-cache.lock").exists());
+    }
+
+    #[test]
+    fn pct_of_budget_computes_and_clamps() {
+        assert_eq!(pct_of_budget(0.0, 10.0), 0);
+        assert_eq!(pct_of_budget(5.0, 10.0), 50);
+        assert_eq!(pct_of_budget(20.0, 10.0), 200);
+        assert_eq!(
+            pct_of_budget(-1.0, 10.0),
+            0,
+            "negative spend never happens, but must not panic"
+        );
+        assert_eq!(
+            pct_of_budget(5.0, 0.0),
+            0,
+            "a zero limit must not divide by zero"
+        );
+    }
+
+    #[test]
+    fn budget_line_disabled_returns_none() {
+        let cfg = BudgetConfig {
+            enabled: false,
+            ..BudgetConfig::default()
+        };
+        assert!(budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(Path::new("/tmp")),
+            Some(1.0)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn budget_line_shows_session_without_a_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            show_daily: false,
+            show_weekly: false,
+            show_monthly: false,
+            show_block5h: false,
+            session_usd: 10.0,
+            ..BudgetConfig::default()
+        };
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            Some(5.0),
+        )
+        .unwrap();
+        assert!(line.contains("sess"));
+        assert!(line.contains("50%"));
+        assert!(!line.contains("day"));
+    }
+
+    #[test]
+    fn budget_line_omits_session_when_no_session_cost_is_available() {
+        let cfg = BudgetConfig {
+            enabled: true,
+            show_daily: false,
+            show_weekly: false,
+            show_monthly: false,
+            show_block5h: false,
+            ..BudgetConfig::default()
+        };
+        assert!(budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(Path::new("/tmp")),
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn budget_line_reads_daily_weekly_monthly_block5h_from_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 3.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            show_session: false,
+            weekly_usd: 100.0,
+            workdays: 5.0,
+            block5h_usd: 15.0,
+            ..BudgetConfig::default()
+        };
+
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            None,
+        )
+        .unwrap();
+        assert!(line.contains("day"));
+        assert!(line.contains("wk"));
+        assert!(line.contains("mo"));
+        assert!(line.contains("5h"));
+    }
+
+    #[test]
+    fn budget_line_respects_individual_show_toggles() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            ..cost_cache::CachePayload::default()
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            show_session: false,
+            show_weekly: false,
+            show_monthly: false,
+            show_block5h: false,
+            ..BudgetConfig::default()
+        };
+
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            Some(1.0),
+        )
+        .unwrap();
+        assert!(line.contains("day"));
+        assert!(!line.contains("wk"));
+        assert!(!line.contains("sess"));
+    }
+
+    #[test]
+    fn render_budget_window_colors_by_threshold() {
+        let display = DisplayConfig::default();
+        let green = render_budget_window("x", 1.0, 100.0, 6, &display); // 1%
+        let yellow = render_budget_window("x", 55.0, 100.0, 6, &display); // 55%
+        let orange = render_budget_window("x", 70.0, 100.0, 6, &display); // 70%
+        let red = render_budget_window("x", 95.0, 100.0, 6, &display); // 95%
+        assert!(green.contains(GREEN));
+        assert!(yellow.contains(YELLOW));
+        assert!(orange.contains(ORANGE));
+        assert!(red.contains(BLINK_RED));
     }
 }

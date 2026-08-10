@@ -225,6 +225,16 @@ fn main() {
         output.push('\n');
         output.push_str(&daily);
     }
+    if let Some(budget) = cost::budget_line(
+        &cfg.budget,
+        &cfg.cost,
+        &cfg.display,
+        data_dir.as_deref(),
+        session_cost,
+    ) {
+        output.push('\n');
+        output.push_str(&budget);
+    }
 
     let used_pct = payload
         .remaining_percentage()
