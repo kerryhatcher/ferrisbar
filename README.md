@@ -45,6 +45,10 @@ auto-compaction hits.
 - **🚦 Escalating urgency** — [green](#-configuration) under 50%, yellow to
   65%, orange to 80%, then a blinking red bar with a 💀 so you notice before
   you get compacted.
+- **💰 Cost, at a glance** — this session's running cost next to the context
+  gauge, and today's total across every session with a per-model split on
+  its own line, estimated from your local transcripts. [Configurable, and
+  never a billing source of record](#-configuration).
 - **⚡ Fast and dependency-light** — one [Rust](https://www.rust-lang.org)
   binary and four runtime crates ([serde](https://serde.rs) and
   [serde_json](https://docs.rs/serde_json) for the payload,
@@ -252,6 +256,12 @@ threshold_yellow   = 50
 threshold_orange   = 65
 threshold_critical = 80
 show_task          = true
+
+[cost]
+show_session      = true
+show_daily        = true
+ttl_seconds       = 90
+breakdown_min_usd = 0.005
 ```
 
 A relative `log.path` resolves against the data directory, not the
@@ -263,6 +273,20 @@ above. `bar_width` clamps to `1..=100` when it parses as a value in `0..=255`;
 an integer outside that range (negative, or above 255) falls back to the
 default of `10` instead. `show_task` set to `false` hides the active-task
 segment entirely.
+
+`cost.show_session` shows Claude Code's own running cost for the current
+session (`cost.total_cost_usd` on stdin) right after the context gauge —
+free, no parsing, omitted whenever the gauge itself is. `cost.show_daily`
+adds a second line with today's total across every session, plus a
+per-model split, estimated from your local transcripts under
+`$CLAUDE_CONFIG_DIR/projects/**/*.jsonl` and a bundled Anthropic pricing
+table — this is an estimate, not a billing figure. Computing that total
+means walking every transcript, which is too slow to redo on every render,
+so it is cached and refreshed by a short-lived detached background process;
+`ttl_seconds` controls how stale that cache may get before a refresh fires
+(`0` disables the daily line and its background process entirely).
+`breakdown_min_usd` folds per-model entries under that amount into the total
+without listing them.
 
 ### The log
 
@@ -290,6 +314,7 @@ Each overrides its config-file counterpart.
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `claude.auto_compact_window` | Token count at which [auto-compaction][compact] fires. Overrides when set to a positive number; `0`, a negative value, or a string that doesn't parse as a number all defer to the config file. |
 | `FERRISBAR_LOG_PATH` | `log.path` | Log to somewhere else for one session. |
 | `FERRISBAR_LOG_LEVEL` | `log.level` | Turn logging up without editing the file. |
+| `FERRISBAR_COST_TTL_SECONDS` | `cost.ttl_seconds` | Silence the daily-cost line (and its background refresh) for one session without editing the file — set to `0`. |
 
 With the default thresholds above, the gauge maps how much of your *usable*
 window is spent as follows; custom threshold values replace these
@@ -324,6 +349,7 @@ contract and the reasoning behind it.
 | `session_id` | string | Locating the per-session task file under `$CLAUDE_CONFIG_DIR`, to find the active task. |
 | `context_window.remaining_percentage` | number | The gauge. Omit it and the gauge is omitted. |
 | `context_window.total_tokens` | number | Turning `CLAUDE_CODE_AUTO_COMPACT_WINDOW` into a percentage. |
+| `cost.total_cost_usd` | number | The session-cost chip next to the gauge. |
 
 Every field is optional, and every field is parsed leniently by
 [serde](https://serde.rs): a value of the wrong type is treated as absent

@@ -25,6 +25,15 @@ threshold_yellow   = 50
 threshold_orange   = 65
 threshold_critical = 80
 show_task          = true
+
+[cost]
+show_session      = true   # session-to-date cost next to the context bar
+show_daily        = true   # today's total + per-model split, on its own line
+ttl_seconds       = 90     # daily total cache lifetime in seconds; a stale
+                            # cache triggers a background refresh; 0 disables
+                            # the daily line entirely
+breakdown_min_usd = 0.005  # per-model entries below this are folded into the
+                            # total rather than listed individually
 "#;
 
 pub const MIN_MAX_SIZE_BYTES: u64 = 4096;
@@ -75,11 +84,31 @@ impl Default for DisplayConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CostConfig {
+    pub show_session: bool,
+    pub show_daily: bool,
+    pub ttl_seconds: u64,
+    pub breakdown_min_usd: f64,
+}
+
+impl Default for CostConfig {
+    fn default() -> Self {
+        Self {
+            show_session: true,
+            show_daily: true,
+            ttl_seconds: 90,
+            breakdown_min_usd: 0.005,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub log: LogConfig,
     pub claude: ClaudeConfig,
     pub display: DisplayConfig,
+    pub cost: CostConfig,
 }
 
 impl Default for LogConfig {
@@ -113,6 +142,7 @@ impl Default for Config {
             log: LogConfig::default(),
             claude: ClaudeConfig::default(),
             display: DisplayConfig::default(),
+            cost: CostConfig::default(),
         }
     }
 }
@@ -235,6 +265,21 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
                 threshold_orange,
                 threshold_critical,
                 show_task,
+            }
+        },
+        cost: {
+            let cost = section(&table, "cost");
+            let defaults_cost = CostConfig::default();
+
+            CostConfig {
+                show_session: get_bool(cost, "show_session").unwrap_or(defaults_cost.show_session),
+                show_daily: get_bool(cost, "show_daily").unwrap_or(defaults_cost.show_daily),
+                ttl_seconds: get_integer(cost, "ttl_seconds")
+                    .and_then(|v| u64::try_from(v).ok())
+                    .unwrap_or(defaults_cost.ttl_seconds),
+                breakdown_min_usd: get_number(cost, "breakdown_min_usd")
+                    .filter(|v| *v >= 0.0)
+                    .unwrap_or(defaults_cost.breakdown_min_usd),
             }
         },
     };
@@ -519,5 +564,67 @@ mod tests {
         let (c, warnings) = from_toml_str(TEMPLATE);
         assert!(warnings.is_empty());
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn cost_defaults_match_the_documented_values() {
+        let c = CostConfig::default();
+        assert!(c.show_session);
+        assert!(c.show_daily);
+        assert_eq!(c.ttl_seconds, 90);
+        assert!((c.breakdown_min_usd - 0.005).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn template_includes_cost_block() {
+        assert!(TEMPLATE.contains("[cost]"));
+        assert!(TEMPLATE.contains("show_session"));
+        assert!(TEMPLATE.contains("show_daily"));
+        assert!(TEMPLATE.contains("ttl_seconds"));
+        assert!(TEMPLATE.contains("breakdown_min_usd"));
+    }
+
+    #[test]
+    fn cost_values_are_read_from_toml() {
+        let (c, _) = from_toml_str(
+            "[cost]\nshow_session = false\nshow_daily = false\n\
+             ttl_seconds = 30\nbreakdown_min_usd = 0.05\n",
+        );
+        assert!(!c.cost.show_session);
+        assert!(!c.cost.show_daily);
+        assert_eq!(c.cost.ttl_seconds, 30);
+        assert!((c.cost.breakdown_min_usd - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cost_ttl_seconds_zero_is_honored_not_clamped() {
+        let (c, _) = from_toml_str("[cost]\nttl_seconds = 0\n");
+        assert_eq!(
+            c.cost.ttl_seconds, 0,
+            "0 is the documented \"disable\" value"
+        );
+    }
+
+    #[test]
+    fn cost_negative_ttl_falls_back_to_default() {
+        let (c, _) = from_toml_str("[cost]\nttl_seconds = -5\n");
+        assert_eq!(c.cost.ttl_seconds, CostConfig::default().ttl_seconds);
+    }
+
+    #[test]
+    fn cost_negative_breakdown_min_falls_back_to_default() {
+        let (c, _) = from_toml_str("[cost]\nbreakdown_min_usd = -1.0\n");
+        assert!(
+            (c.cost.breakdown_min_usd - CostConfig::default().breakdown_min_usd).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn cost_partial_block_fills_in_defaults() {
+        let (c, _) = from_toml_str("[cost]\nshow_daily = false\n");
+        assert!(!c.cost.show_daily);
+        assert!(c.cost.show_session);
+        assert_eq!(c.cost.ttl_seconds, 90);
     }
 }

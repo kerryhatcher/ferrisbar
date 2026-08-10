@@ -24,6 +24,8 @@ pub struct Payload {
     pub session_id: Option<String>,
     #[serde(default, deserialize_with = "lenient_option")]
     pub context_window: Option<ContextWindow>,
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub cost: Option<Cost>,
 }
 
 #[derive(Deserialize, Default)]
@@ -44,6 +46,12 @@ pub struct ContextWindow {
     pub remaining_percentage: Option<f64>,
     #[serde(default, deserialize_with = "lenient_option")]
     pub total_tokens: Option<f64>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Cost {
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub total_cost_usd: Option<f64>,
 }
 
 impl Payload {
@@ -79,6 +87,17 @@ impl Payload {
             .and_then(|c| c.total_tokens)
             .filter(|&t| t > 0.0)
             .unwrap_or(1_000_000.0)
+    }
+
+    /// Claude Code's own running total for the current session, straight
+    /// from the payload — no transcript parsing needed. `None` when absent
+    /// or negative (a negative cost is not a value Claude Code would ever
+    /// legitimately send, so treated as missing rather than rendered).
+    pub fn session_cost_usd(&self) -> Option<f64> {
+        self.cost
+            .as_ref()
+            .and_then(|c| c.total_cost_usd)
+            .filter(|&v| v >= 0.0)
     }
 }
 
@@ -190,6 +209,34 @@ mod tests {
         .unwrap();
         assert_eq!(payload.remaining_percentage(), Some(42.5));
         assert_eq!(payload.total_tokens(), 1_000_000.0);
+    }
+
+    #[test]
+    fn session_cost_usd_none_when_missing() {
+        let payload: Payload = serde_json::from_str("{}").unwrap();
+        assert_eq!(payload.session_cost_usd(), None);
+    }
+
+    #[test]
+    fn session_cost_usd_present() {
+        let payload: Payload =
+            serde_json::from_str(r#"{"cost":{"total_cost_usd":0.4213}}"#).unwrap();
+        assert_eq!(payload.session_cost_usd(), Some(0.4213));
+    }
+
+    #[test]
+    fn session_cost_usd_negative_treated_as_missing() {
+        let payload: Payload = serde_json::from_str(r#"{"cost":{"total_cost_usd":-1.0}}"#).unwrap();
+        assert_eq!(payload.session_cost_usd(), None);
+    }
+
+    #[test]
+    fn session_cost_usd_wrong_type_falls_back_but_other_fields_still_parse() {
+        let payload: Payload =
+            serde_json::from_str(r#"{"model":{"display_name":"Sonnet"},"cost":"not an object"}"#)
+                .unwrap();
+        assert_eq!(payload.model_name(), "Sonnet");
+        assert_eq!(payload.session_cost_usd(), None);
     }
 
     #[test]
