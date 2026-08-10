@@ -133,7 +133,7 @@ fn minimal_payload_shows_model_and_dirname_only() {
         payload,
         &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
     );
-    assert_eq!(out, "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m");
+    assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m");
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn missing_model_defaults_to_claude() {
         payload,
         &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
     );
-    assert_eq!(out, "\x1b[2mClaude\x1b[0m │ \x1b[2mmyproject\x1b[0m");
+    assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mClaude\x1b[0m");
 }
 
 #[test]
@@ -167,8 +167,47 @@ fn context_bar_rendered_when_context_window_present() {
     );
     assert_eq!(
         out,
-        "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m"
+        "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m"
     );
+}
+
+#[test]
+fn git_branch_rendered_after_the_folder_name() {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    std::fs::write(
+        repo.path().join(".git").join("HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .unwrap();
+    let project_dir = repo.path().join("myproject");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let payload = format!(
+        r#"{{"model":{{"display_name":"Sonnet"}},"workspace":{{"current_dir":"{}"}}}}"#,
+        project_dir.display()
+    );
+    let empty_todos = tempfile::tempdir().unwrap();
+    let out = run_with_env(
+        &payload,
+        &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
+    );
+    assert_eq!(
+        out,
+        "\x1b[2mmyproject\x1b[0m │ \x1b[2mmain\x1b[0m │ \x1b[2mSonnet\x1b[0m"
+    );
+}
+
+#[test]
+fn no_git_branch_segment_outside_a_repo() {
+    let payload =
+        r#"{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/tmp/myproject"}}"#;
+    let empty_todos = tempfile::tempdir().unwrap();
+    let out = run_with_env(
+        payload,
+        &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
+    );
+    assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m");
 }
 
 #[test]
@@ -181,7 +220,7 @@ fn session_cost_rendered_next_to_context_bar() {
     );
     assert_eq!(
         out,
-        "\x1b[2mSonnet\x1b[0m │ \x1b[2mmyproject\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m \x1b[2m│\x1b[0m \x1b[2m$0.42\x1b[0m"
+        "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m \x1b[2m│\x1b[0m \x1b[32m░░░░░░░░░░ 0%\x1b[0m \x1b[2m│\x1b[0m \x1b[2m$0.42\x1b[0m"
     );
 }
 
@@ -228,7 +267,7 @@ fn active_todo_shown_in_bold() {
     );
     assert_eq!(
         out,
-        "\x1b[2mSonnet\x1b[0m │ \x1b[1mFixing bug\x1b[0m │ \x1b[2mmyproject\x1b[0m"
+        "\x1b[2mmyproject\x1b[0m │ \x1b[1mFixing bug\x1b[0m │ \x1b[2mSonnet\x1b[0m"
     );
 }
 

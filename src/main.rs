@@ -3,6 +3,7 @@ mod config_dir;
 mod context_bar;
 mod cost;
 mod cost_cache;
+mod git;
 mod layout;
 mod log;
 mod paths;
@@ -204,6 +205,7 @@ fn main() {
     let dirname = Path::new(&cwd)
         .file_name()
         .map_or_else(|| cwd.clone(), |n| n.to_string_lossy().into_owned());
+    let branch = git::branch_name(&cwd);
 
     let session_cost = cfg
         .cost
@@ -217,6 +219,7 @@ fn main() {
         &dirname,
         cfg.display.show_task,
         session_cost,
+        branch.as_deref(),
     );
     if let Some(daily) = cost::daily_chip(&cfg.cost, data_dir.as_deref()) {
         output.push('\n');

@@ -45,6 +45,8 @@ auto-compaction hits.
 - **🚦 Escalating urgency** — [green](#-configuration) under 50%, yellow to
   65%, orange to 80%, then a blinking red bar with a 💀 so you notice before
   you get compacted.
+- **🌿 Your git branch, right next to the folder** — read straight off
+  `.git/HEAD`, no `git` subprocess. Omitted outside a repository.
 - **💰 Cost, at a glance** — this session's running cost next to the context
   gauge, and today's total across every session with a per-model split on
   its own line, estimated from your local transcripts. [Configurable, and
@@ -168,7 +170,7 @@ echo '{"model":{"display_name":"Claude"},"workspace":{"current_dir":"/tmp"}}' \
   | ferrisbar
 ```
 
-That prints `Claude │ tmp`, dimmed. Claude Code sends a far richer payload at
+That prints `tmp │ Claude`, dimmed. Claude Code sends a far richer payload at
 runtime — see [the input contract](#-reference-the-input-contract).
 
 ## 🛠 Usage
@@ -210,17 +212,27 @@ echo '{
   "model": {"display_name": "Opus 5"},
   "workspace": {"current_dir": "/home/you/projects/ferrisbar"},
   "session_id": "abc123",
-  "context_window": {"remaining_percentage": 41.55, "total_tokens": 1000000}
+  "context_window": {"remaining_percentage": 41.55, "total_tokens": 1000000},
+  "cost": {"total_cost_usd": 0.42}
 }' | ferrisbar
 ```
 
 Segments appear in this order, and each one disappears when it has nothing to
-say:
+say — the directory's git branch and both cost chips are read straight off the
+filesystem, not from the payload above, so they show up too when there is a
+repo and a cache to read from:
 
 ```text
-Opus 5 │ Wiring up the release pipeline │ ferrisbar │ ███████░░░ 70%
-  ↑                    ↑                      ↑              ↑
-model            active task              directory     context gauge
+ferrisbar │ main │ Wiring up the release pipeline │ Opus 5 │ ███████░░░ 70% │ $0.42
+    ↑        ↑              ↑                          ↑          ↑           ↑
+directory  branch      active task                   model   context gauge  session cost
+```
+
+A second line, when the daily-cost cache has data, adds today's total across
+every session with a per-model split:
+
+```text
+$4.81 today (Sonnet $3 · Opus $2)
 ```
 
 ## 🧰 Configuration
