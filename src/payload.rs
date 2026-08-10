@@ -93,11 +93,16 @@ impl Payload {
     /// from the payload — no transcript parsing needed. `None` when absent
     /// or negative (a negative cost is not a value Claude Code would ever
     /// legitimately send, so treated as missing rather than rendered).
+    /// `-0.0` is normalized to `0.0` so it can't render as `-$0.00` — unlike
+    /// a negative or an out-of-range value (which `serde_json` already
+    /// rejects at parse time, degrading the whole payload rather than just
+    /// this field), `-0.0` parses as a legitimate, in-range f64.
     pub fn session_cost_usd(&self) -> Option<f64> {
         self.cost
             .as_ref()
             .and_then(|c| c.total_cost_usd)
             .filter(|&v| v >= 0.0)
+            .map(|v| if v == 0.0 { 0.0 } else { v })
     }
 }
 
@@ -228,6 +233,25 @@ mod tests {
     fn session_cost_usd_negative_treated_as_missing() {
         let payload: Payload = serde_json::from_str(r#"{"cost":{"total_cost_usd":-1.0}}"#).unwrap();
         assert_eq!(payload.session_cost_usd(), None);
+    }
+
+    #[test]
+    fn session_cost_usd_out_of_range_literal_fails_the_whole_parse() {
+        // serde_json rejects an f64 literal that overflows to infinity as a
+        // parse error rather than silently producing `inf` — so `main`'s
+        // existing "malformed JSON prints nothing" path is what protects
+        // this field, not a filter inside `session_cost_usd` itself.
+        let result: Result<Payload, _> =
+            serde_json::from_str(r#"{"cost":{"total_cost_usd":1e400}}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_cost_usd_negative_zero_normalizes_to_positive_zero() {
+        let payload: Payload = serde_json::from_str(r#"{"cost":{"total_cost_usd":-0.0}}"#).unwrap();
+        let cost = payload.session_cost_usd().unwrap();
+        assert_eq!(cost, 0.0);
+        assert!(!cost.is_sign_negative(), "must not render as -$0.00");
     }
 
     #[test]

@@ -58,7 +58,18 @@ pub fn write_cache(data_dir: &Path, payload: &CachePayload) -> std::io::Result<(
     let body = serde_json::to_string(payload)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, &path)
+    match std::fs::rename(&tmp, &path) {
+        Ok(()) => Ok(()),
+        Err(first_err) => {
+            // A rename that fails to replace an existing destination (seen
+            // on Windows when another process has it open) gets one retry
+            // after removing the destination outright — losing that race
+            // just means a render sees no cache for one cycle, not a
+            // corrupt one, since the temp file was already fully written.
+            let _ = std::fs::remove_file(&path);
+            std::fs::rename(&tmp, &path).map_err(|_| first_err)
+        }
+    }
 }
 
 pub fn release_lock(data_dir: &Path) {
@@ -70,21 +81,45 @@ pub fn release_lock(data_dir: &Path) {
 /// already in flight. Every failure — no lock directory, no current-exe
 /// path, spawn error — is swallowed: a refresh that cannot start this
 /// render just means the next stale render tries again.
+///
+/// The lock is acquired the same way `log.rs`'s rotation lock is: an atomic
+/// `create_new` first, and only on `AlreadyExists` do we check whether the
+/// existing lock is stale enough to reclaim. A plain overwrite here (the
+/// previous approach) let two renders that both observed a fresh lock as
+/// "not stale yet" both write over it and spawn duplicate refreshes;
+/// `create_new` means only one of two concurrent callers can ever hold the
+/// lock at a time. Two renders can still both judge the *same stale* lock
+/// reclaimable and both proceed — accepted the same way `log.rs` accepts it
+/// (a dropped generation, not corruption) rather than engineered around.
 pub fn spawn_refresh(data_dir: &Path) {
-    let lock = lock_path(data_dir);
-    if let Ok(age) = std::fs::metadata(&lock)
-        .and_then(|m| m.modified())
-        .map(|t| SystemTime::now().duration_since(t).unwrap_or(Duration::MAX))
-    {
-        if age < LOCK_STALE_AFTER {
-            return; // a refresh is already in flight
-        }
-    }
     if std::fs::create_dir_all(data_dir).is_err() {
         return;
     }
-    if std::fs::write(&lock, b"").is_err() {
-        return;
+    let lock = lock_path(data_dir);
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&lock)
+    {
+        Ok(_) => {}
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return,
+        Err(_) => {
+            let stale = std::fs::metadata(&lock)
+                .and_then(|m| m.modified())
+                .map(|t| SystemTime::now().duration_since(t).unwrap_or(Duration::MAX))
+                .is_ok_and(|age| age >= LOCK_STALE_AFTER);
+            if !stale || std::fs::remove_file(&lock).is_err() {
+                return; // a refresh is already in flight, or reclaiming it failed
+            }
+            if std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&lock)
+                .is_err()
+            {
+                return; // another render reclaimed it first
+            }
+        }
     }
 
     let Ok(exe) = std::env::current_exe() else {
@@ -207,19 +242,27 @@ mod tests {
             filetime::FileTime::from_unix_time(filetime::FileTime::now().unix_seconds() - 120, 0);
         filetime::set_file_mtime(lock_path(dir.path()), stale).unwrap();
 
+        // Captured *before* the call, not read back after it returns: the
+        // reclaim itself (remove + create_new) happens up front, but
+        // `spawn_refresh` also launches a detached child process before
+        // returning, and how long process creation takes is both
+        // platform-dependent and, on a loaded CI runner (Windows especially),
+        // slow enough to blow past a few seconds. Comparing the reclaimed
+        // lock's mtime to a "now" read after that wait flaked for exactly
+        // this reason; comparing it to a timestamp from before the call does
+        // not, because it no longer depends on how long spawning took.
+        let before = SystemTime::now();
+
         spawn_refresh(dir.path());
 
-        // Reclaimed means a fresh lock now exists (written just now), not
-        // that it's still 120s old.
-        let age = SystemTime::now()
-            .duration_since(
-                std::fs::metadata(lock_path(dir.path()))
-                    .unwrap()
-                    .modified()
-                    .unwrap(),
-            )
+        let mtime = std::fs::metadata(lock_path(dir.path()))
+            .unwrap()
+            .modified()
             .unwrap();
-        assert!(age < Duration::from_secs(5));
+        assert!(
+            mtime + Duration::from_secs(1) >= before,
+            "reclaimed lock must not still carry the stale (120s-old) mtime"
+        );
         release_lock(dir.path());
     }
 }

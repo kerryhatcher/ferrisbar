@@ -24,6 +24,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const PRICING_JSON: &str = include_str!("pricing.json");
 
+/// How many consecutive unreadable/non-UTF-8 lines `aggregate_today` will
+/// skip in one transcript before giving up on that file — see the comment
+/// at its call site.
+const MAX_CONSECUTIVE_LINE_ERRORS: u32 = 1000;
+
 #[derive(Deserialize, Clone, Copy, Default)]
 struct ModelRate {
     #[serde(default)]
@@ -72,10 +77,15 @@ fn resolve_model<'a>(model: &str, pricing: &'a PricingTable) -> Option<&'a Model
         return pricing.models.get(key);
     }
     let lowered = model.to_lowercase();
+    // `max_by_key` over the longest matching alias, not `find`: `aliases` is
+    // a HashMap, so iteration order is unspecified, and a model id matching
+    // more than one alias substring would otherwise resolve to an arbitrary
+    // one (varying across runs, not just across models).
     pricing
         .aliases
         .iter()
-        .find(|(alias, _)| lowered.contains(alias.as_str()))
+        .filter(|(alias, _)| lowered.contains(alias.as_str()))
+        .max_by_key(|(alias, _)| alias.len())
         .and_then(|(_, target)| pricing.models.get(target))
 }
 
@@ -200,9 +210,12 @@ fn parse_line(line: &str) -> Option<ParsedRecord> {
         return None;
     }
     let timestamp = record.timestamp?;
-    if timestamp.len() < 10 {
-        return None;
-    }
+    // `.get(..10)` rather than `timestamp[..10]`: a byte-length check alone
+    // does not guarantee byte 10 falls on a UTF-8 char boundary, and slicing
+    // on a non-boundary panics — a real transcript timestamp is always
+    // plain ASCII, but the never-panic-on-input invariant covers malformed
+    // ones too.
+    let date = timestamp.get(..10)?.to_string();
     let dedup_key = match (message.id, record.request_id) {
         (Some(mid), Some(rid)) if !mid.is_empty() && !rid.is_empty() => {
             Some(format!("{mid}:{rid}"))
@@ -212,7 +225,7 @@ fn parse_line(line: &str) -> Option<ParsedRecord> {
     Some(ParsedRecord {
         usage,
         model: message.model.unwrap_or_default(),
-        date: timestamp[..10].to_string(),
+        date,
         dedup_key,
     })
 }
@@ -229,8 +242,19 @@ fn discover_transcripts(root: &Path) -> Vec<PathBuf> {
             continue;
         };
         for entry in entries.flatten() {
+            // `entry.file_type()` does not follow symlinks (unlike
+            // `path.is_dir()`, which does): a directory symlink pointing at
+            // an ancestor would otherwise put that ancestor back on the
+            // stack forever. Never following one is simpler than tracking
+            // visited paths, and legitimate transcripts are never symlinks.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             let path = entry.path();
-            if path.is_dir() {
+            if file_type.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "jsonl") {
                 out.push(path);
@@ -303,7 +327,32 @@ fn aggregate_today(transcripts_root: &Path, today: &str) -> DailyTotal {
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
-        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        // Not `.lines().map_while(Result::ok)` (stops the whole file at the
+        // first malformed/non-UTF-8 line, silently undercounting everything
+        // after it) and not `.filter_map(Result::ok)` either — clippy's
+        // `lines_filter_map_ok` is right that a persistent I/O error can
+        // make `next()` return the same `Err` forever without advancing,
+        // spinning this loop forever. Skipping errors is still correct for
+        // the common case, so this bounds how many *consecutive* errors it
+        // tolerates before giving up on the file, rather than stopping at
+        // the first one or never stopping at all.
+        let mut lines = std::io::BufReader::new(file).lines();
+        let mut consecutive_errors = 0u32;
+        loop {
+            let line = match lines.next() {
+                None => break,
+                Some(Ok(line)) => {
+                    consecutive_errors = 0;
+                    line
+                }
+                Some(Err(_)) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors > MAX_CONSECUTIVE_LINE_ERRORS {
+                        break;
+                    }
+                    continue;
+                }
+            };
             let Some(rec) = parse_line(&line) else {
                 continue;
             };
@@ -348,7 +397,16 @@ fn format_daily_chip(daily: &DailyTotal, min_usd: f64) -> String {
     if !collapsed.is_empty() {
         let inner = collapsed
             .iter()
-            .map(|(label, cost)| format!("{label} ${cost:.0}"))
+            .map(|(label, cost)| {
+                // Whole dollars once a model has spent that much (keeps the
+                // parenthetical compact), but a sub-dollar spend keeps its
+                // cents — rounding e.g. $0.04 down to "$0" reads as free.
+                if *cost < 1.0 {
+                    format!("{label} ${cost:.2}")
+                } else {
+                    format!("{label} ${cost:.0}")
+                }
+            })
             .collect::<Vec<_>>()
             .join(" · ");
         let _ = write!(chip, " {DIM}({inner}){RESET}");
@@ -386,15 +444,20 @@ pub fn daily_chip(cfg: &CostConfig, data_dir: Option<&Path>) -> Option<String> {
         return None;
     }
     let data_dir = data_dir?;
+    let today = today_utc_date(now_unix_secs());
     let cached = cost_cache::read_cache(data_dir);
+    // A cache dated to a previous day is stale regardless of its age: right
+    // after the UTC day boundary it can still be well under `ttl_seconds`
+    // old, and without this check the chip would stay hidden until the TTL
+    // naturally elapses instead of refreshing right away.
     let stale = cached
         .as_ref()
-        .is_none_or(|(_, age)| age.as_secs() >= cfg.ttl_seconds);
+        .is_none_or(|(payload, age)| age.as_secs() >= cfg.ttl_seconds || payload.date != today);
     if stale {
         cost_cache::spawn_refresh(data_dir);
     }
     let (payload, _age) = cached?;
-    if payload.date != today_utc_date(now_unix_secs()) {
+    if payload.date != today {
         return None; // cache is from a previous day; wait for the refresh
     }
     let daily = DailyTotal {
@@ -437,6 +500,36 @@ mod tests {
     fn resolve_model_alias_fallback() {
         let pricing = load_pricing();
         assert!(resolve_model("claude-opus-5", &pricing).is_some());
+    }
+
+    #[test]
+    fn resolve_model_alias_picks_the_longest_deterministically() {
+        let mut pricing = PricingTable::default();
+        pricing.models.insert(
+            "short-target".to_string(),
+            ModelRate {
+                input: 1.0,
+                ..ModelRate::default()
+            },
+        );
+        pricing.models.insert(
+            "long-target".to_string(),
+            ModelRate {
+                input: 2.0,
+                ..ModelRate::default()
+            },
+        );
+        pricing
+            .aliases
+            .insert("op".to_string(), "short-target".to_string());
+        pricing
+            .aliases
+            .insert("opus".to_string(), "long-target".to_string());
+
+        // Both "op" and "opus" match; the longer alias must win regardless
+        // of HashMap iteration order, or this test would be flaky.
+        let rate = resolve_model("claude-opus-9", &pricing).unwrap();
+        assert!((rate.input - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -512,6 +605,15 @@ mod tests {
         let line = r#"{"timestamp":"2026-08-10T00:00:00Z","message":{"model":"x","usage":{"input_tokens":5}}}"#;
         let rec = parse_line(line).unwrap();
         assert_eq!(rec.dedup_key, None);
+    }
+
+    #[test]
+    fn parse_line_does_not_panic_on_a_non_char_boundary_timestamp() {
+        // "日" is 3 bytes; byte offset 10 lands inside the third one, so a
+        // plain `timestamp[..10]` slice would panic. Must degrade to `None`
+        // instead, per the never-panic-on-input invariant.
+        let line = r#"{"timestamp":"日本語日本語日本語","message":{"model":"x","usage":{"input_tokens":5}}}"#;
+        assert!(parse_line(line).is_none());
     }
 
     #[test]
@@ -603,6 +705,45 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_today_keeps_reading_after_a_malformed_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jsonl");
+        let mut bytes = vec![0xFF_u8, 0xFE, b'\n']; // not valid UTF-8
+        bytes.extend_from_slice(
+            usage_line(
+                "2026-08-10T10:00:00Z",
+                "claude-sonnet-5",
+                "req_1",
+                "msg_1",
+                1_000_000,
+            )
+            .as_bytes(),
+        );
+        std::fs::write(&path, bytes).unwrap();
+
+        let daily = aggregate_today(dir.path(), "2026-08-10");
+        assert!(
+            (daily.total_usd - 2.0).abs() < 1e-9,
+            "the valid line after the malformed one must still be counted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_transcripts_does_not_follow_a_directory_symlink_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.jsonl"), "").unwrap();
+        // If followed, this would put `dir` back on the traversal stack
+        // from inside `sub`, forever.
+        std::os::unix::fs::symlink(dir.path(), sub.join("loop")).unwrap();
+
+        let found = discover_transcripts(dir.path());
+        assert_eq!(found, vec![sub.join("a.jsonl")]);
+    }
+
+    #[test]
     fn aggregate_today_ignores_unreadable_root() {
         let daily = aggregate_today(Path::new("/does/not/exist"), "2026-08-10");
         assert_eq!(daily.total_usd, 0.0);
@@ -622,6 +763,22 @@ mod tests {
         assert!(chip.contains("$10.01") || chip.contains("$10.00"));
         assert!(chip.contains("Sonnet"));
         assert!(!chip.contains("Haiku"));
+    }
+
+    #[test]
+    fn format_daily_chip_keeps_cents_for_a_sub_dollar_model() {
+        let daily = DailyTotal {
+            total_usd: 10.04,
+            by_model: vec![
+                ("claude-sonnet-5".to_string(), 10.0),
+                ("claude-haiku-4-5".to_string(), 0.04),
+            ],
+        };
+        // Above breakdown_min_usd but below $1 — rounding to `.0` would
+        // read as "Haiku $0", i.e. free.
+        let chip = format_daily_chip(&daily, 0.005);
+        assert!(chip.contains("Haiku $0.04"));
+        assert!(chip.contains("Sonnet $10"));
     }
 
     #[test]
@@ -690,6 +847,23 @@ mod tests {
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
         assert!(daily_chip(&CostConfig::default(), Some(dir.path())).is_none());
+    }
+
+    #[test]
+    fn daily_chip_refreshes_a_wrong_dated_cache_even_when_ttl_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: "2000-01-01".to_string(), // wrong day, but just written: well under any TTL
+            total_usd: 4.2,
+            by_model: Vec::new(),
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+
+        daily_chip(&CostConfig::default(), Some(dir.path()));
+
+        // A refresh must fire right away rather than waiting out the TTL —
+        // `spawn_refresh` leaves a lock file behind as it starts one.
+        assert!(dir.path().join("cost-cache.lock").exists());
     }
 
     #[test]
