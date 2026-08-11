@@ -98,11 +98,11 @@ fn resolve_model<'a>(model: &str, pricing: &'a PricingTable) -> Option<&'a Model
 // elsewhere in this module.
 #[allow(clippy::struct_field_names)]
 #[derive(Default, Clone, Copy)]
-struct Usage {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_creation_tokens: u64,
-    cache_read_tokens: u64,
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
 }
 
 impl Usage {
@@ -184,18 +184,23 @@ struct RecordRaw {
     timestamp: Option<String>,
     #[serde(rename = "requestId", alias = "request_id")]
     request_id: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
-struct ParsedRecord {
-    usage: Usage,
-    model: String,
-    date: String,
+#[allow(dead_code)]
+// ParsedRecord is pub and fields are pub because Task 5's Sink module will consume them.
+pub struct ParsedRecord {
+    pub usage: Usage,
+    pub model: String,
+    pub date: String,
     /// `None` when `timestamp` doesn't parse as the expected
     /// `YYYY-MM-DDTHH:MM:SS...` shape — such a record still counts toward
     /// `date`-keyed daily aggregation but is excluded from the rolling/
     /// calendar budget windows, which need a real instant to compare against.
-    timestamp_unix: Option<i64>,
-    dedup_key: Option<String>,
+    pub timestamp_unix: Option<i64>,
+    pub dedup_key: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// `None` for anything that is not a usage-bearing assistant message —
@@ -237,6 +242,7 @@ fn parse_line(line: &str) -> Option<ParsedRecord> {
         timestamp_unix: parse_iso8601_utc(&timestamp),
         date,
         dedup_key,
+        cwd: record.cwd,
     })
 }
 
@@ -876,6 +882,20 @@ mod tests {
         // instead, per the never-panic-on-input invariant.
         let line = r#"{"timestamp":"日本語日本語日本語","message":{"model":"x","usage":{"input_tokens":5}}}"#;
         assert!(parse_line(line).is_none());
+    }
+
+    #[test]
+    fn parse_line_captures_the_top_level_cwd_field() {
+        let line = r#"{"cwd":"/Users/dev/myrepo","timestamp":"2026-08-10T10:00:00Z","requestId":"req_1","message":{"model":"claude-sonnet-5","id":"msg_1","usage":{"input_tokens":100}}}"#;
+        let rec = parse_line(line).unwrap();
+        assert_eq!(rec.cwd, Some("/Users/dev/myrepo".to_string()));
+    }
+
+    #[test]
+    fn parse_line_missing_cwd_is_none() {
+        let line = &usage_line("2026-08-10T10:00:00Z", "claude-sonnet-5", "req_1", "msg_1", 100);
+        let rec = parse_line(line).unwrap();
+        assert_eq!(rec.cwd, None);
     }
 
     #[test]
