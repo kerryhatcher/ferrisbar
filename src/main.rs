@@ -8,6 +8,7 @@ mod layout;
 mod log;
 mod paths;
 mod payload;
+mod repo_identity;
 mod setup;
 mod todo;
 
