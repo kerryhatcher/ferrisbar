@@ -122,15 +122,9 @@ impl Default for CostConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AnalyticsConfig {
     pub enabled: bool,
-}
-
-impl Default for AnalyticsConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 // Five independent per-window on/off toggles (plus `enabled`), not a state

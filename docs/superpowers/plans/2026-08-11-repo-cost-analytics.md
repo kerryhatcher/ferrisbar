@@ -219,7 +219,7 @@ git commit -m "feat: add [analytics] config section"
 - Modify: `src/main.rs` (add `mod repo_identity;`)
 
 **Interfaces:**
-- Consumes: `git::find_git_dir(start: &Path) -> Option<PathBuf>` (existing, made `pub(crate)`).
+- Consumes: `git::find_git_dir(start: &Path) -> Option<PathBuf>` (existing, made `pub`).
 - Produces: `repo_identity::RepoIdentity { key: String, display: String }`, `repo_identity::resolve(cwd: &str) -> RepoIdentity` — always returns *something* (never `None`), used by Task 5's `Sink` and Task 8's CLI default-repo resolution.
 
 - [ ] **Step 1: Make `find_git_dir` crate-visible**
@@ -233,7 +233,7 @@ fn find_git_dir(start: &Path) -> Option<PathBuf> {
 to:
 
 ```rust
-pub(crate) fn find_git_dir(start: &Path) -> Option<PathBuf> {
+pub fn find_git_dir(start: &Path) -> Option<PathBuf> {
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -249,9 +249,9 @@ Create `src/repo_identity.rs`:
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RepoIdentity {
-    pub(crate) key: String,
-    pub(crate) display: String,
+pub struct RepoIdentity {
+    pub key: String,
+    pub display: String,
 }
 
 #[cfg(test)]
@@ -430,7 +430,7 @@ fn cwd_folder_name(cwd: &str) -> String {
 /// `RepoIdentity` — a missing `.git`, an unreadable config, or an
 /// unparseable remote URL all degrade to a `local:` identity rather than
 /// failing.
-pub(crate) fn resolve(cwd: &str) -> RepoIdentity {
+pub fn resolve(cwd: &str) -> RepoIdentity {
     let Some(git_dir) = crate::git::find_git_dir(Path::new(cwd)) else {
         let name = cwd_folder_name(cwd);
         return RepoIdentity {
@@ -480,7 +480,7 @@ git commit -m "feat: resolve repo identity from a working directory's git remote
 - Modify: `src/cost.rs`
 
 **Interfaces:**
-- Produces: `ParsedRecord.cwd: Option<String>` (new field), plus `pub(crate)` visibility on `ParsedRecord`, `Usage`, and every field Task 5's `Sink` will read (`usage`, `model`, `date`, `cwd`, and `Usage`'s four token fields) — the type Task 5 consumes.
+- Produces: `ParsedRecord.cwd: Option<String>` (new field), plus `pub` visibility on `ParsedRecord`, `Usage`, and every field Task 5's `Sink` will read (`usage`, `model`, `date`, `cwd`, and `Usage`'s four token fields) — the type Task 5 consumes.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -523,29 +523,29 @@ struct RecordRaw {
 }
 ```
 
-Change `ParsedRecord` to be `pub(crate)` with `pub(crate)` fields, plus the new one:
+Change `ParsedRecord` to be `pub` with `pub` fields, plus the new one:
 
 ```rust
-pub(crate) struct ParsedRecord {
-    pub(crate) usage: Usage,
-    pub(crate) model: String,
-    pub(crate) date: String,
+pub struct ParsedRecord {
+    pub usage: Usage,
+    pub model: String,
+    pub date: String,
     timestamp_unix: Option<i64>,
     dedup_key: Option<String>,
-    pub(crate) cwd: Option<String>,
+    pub cwd: Option<String>,
 }
 ```
 
-Make `Usage` and its fields `pub(crate)` too:
+Make `Usage` and its fields `pub` too:
 
 ```rust
 #[allow(clippy::struct_field_names)]
 #[derive(Default, Clone, Copy)]
-pub(crate) struct Usage {
-    pub(crate) input_tokens: u64,
-    pub(crate) output_tokens: u64,
-    pub(crate) cache_creation_tokens: u64,
-    pub(crate) cache_read_tokens: u64,
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
 }
 ```
 
@@ -607,20 +607,20 @@ Create `src/analytics.rs`:
 mod store;
 
 #[cfg(feature = "analytics")]
-pub(crate) use store::Sink;
+pub use store::Sink;
 
 #[cfg(not(feature = "analytics"))]
-pub(crate) struct Sink;
+pub struct Sink;
 
 #[cfg(not(feature = "analytics"))]
 impl Sink {
-    pub(crate) fn new(_enabled: bool, _today: String, _yesterday: String) -> Self {
+    pub fn new(_enabled: bool, _today: String, _yesterday: String) -> Self {
         Self
     }
 
-    pub(crate) fn record(&mut self, _rec: &crate::cost::ParsedRecord, _cost: f64) {}
+    pub fn record(&mut self, _rec: &crate::cost::ParsedRecord, _cost: f64) {}
 
-    pub(crate) fn flush(self, _data_dir: &std::path::Path) {}
+    pub fn flush(self, _data_dir: &std::path::Path) {}
 }
 ```
 
@@ -657,16 +657,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub(crate) const TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("cost_rows");
+pub const TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("cost_rows");
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub(crate) struct Row {
-    pub(crate) repo_display: String,
-    pub(crate) cost_usd: f64,
-    pub(crate) input_tokens: u64,
-    pub(crate) output_tokens: u64,
-    pub(crate) cache_creation_tokens: u64,
-    pub(crate) cache_read_tokens: u64,
+pub struct Row {
+    pub repo_display: String,
+    pub cost_usd: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
 }
 
 impl Row {
@@ -679,7 +679,7 @@ impl Row {
     }
 }
 
-pub(crate) fn db_path(data_dir: &Path) -> PathBuf {
+pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("analytics.redb")
 }
 
@@ -690,7 +690,7 @@ fn encode_key(date: &str, repo_key: &str, model: &str) -> String {
 /// Inverse of `encode_key`. `None` for a key that doesn't split into
 /// exactly three `\0`-separated parts — defensive against a store written
 /// by some future, differently-shaped version of this code.
-pub(crate) fn decode_key(raw: &str) -> Option<(String, String, String)> {
+pub fn decode_key(raw: &str) -> Option<(String, String, String)> {
     let mut parts = raw.split('\0');
     let date = parts.next()?.to_string();
     let repo_key = parts.next()?.to_string();
@@ -701,7 +701,7 @@ pub(crate) fn decode_key(raw: &str) -> Option<(String, String, String)> {
     Some((date, repo_key, model))
 }
 
-pub(crate) struct Sink {
+pub struct Sink {
     enabled: bool,
     today: String,
     yesterday: String,
@@ -710,7 +710,7 @@ pub(crate) struct Sink {
 }
 
 impl Sink {
-    pub(crate) fn new(enabled: bool, today: String, yesterday: String) -> Self {
+    pub fn new(enabled: bool, today: String, yesterday: String) -> Self {
         Self {
             enabled,
             today,
@@ -723,7 +723,7 @@ impl Sink {
     /// No-op unless analytics is enabled, `rec.date` is today or
     /// yesterday, and `rec.cwd` is present — usage with no `cwd` cannot be
     /// attributed to a repo, so it is skipped rather than guessed.
-    pub(crate) fn record(&mut self, rec: &ParsedRecord, cost: f64) {
+    pub fn record(&mut self, rec: &ParsedRecord, cost: f64) {
         if !self.enabled || (rec.date != self.today && rec.date != self.yesterday) {
             return;
         }
@@ -753,7 +753,7 @@ impl Sink {
     /// already holds each key's full recomputed total for this pass. A
     /// redb open/write/commit failure is swallowed: a failed analytics
     /// write must never break the cost-chip refresh it piggybacks on.
-    pub(crate) fn flush(self, data_dir: &Path) {
+    pub fn flush(self, data_dir: &Path) {
         if !self.enabled || self.rows.is_empty() {
             return;
         }
@@ -786,14 +786,14 @@ mod tests {
     use super::*;
 
     fn usage_record(date: &str, model: &str, cwd: &str) -> ParsedRecord {
-        // `cost.rs`'s `ParsedRecord` fields are `pub(crate)`, but its
+        // `cost.rs`'s `ParsedRecord` fields are `pub`, but its
         // `timestamp_unix`/`dedup_key` are private to that module — this
         // helper needs a constructor. Add one in `src/cost.rs` alongside
         // `ParsedRecord`'s definition (Task 4's struct):
         //
         //     #[cfg(any(test, feature = "analytics"))]
         //     impl ParsedRecord {
-        //         pub(crate) fn for_test(date: &str, model: &str, cwd: &str, usage: Usage) -> Self {
+        //         pub fn for_test(date: &str, model: &str, cwd: &str, usage: Usage) -> Self {
         //             Self {
         //                 usage,
         //                 model: model.to_string(),
@@ -892,7 +892,7 @@ In `src/cost.rs`, add just below `ParsedRecord`'s struct definition (from Task 4
 ```rust
 #[cfg(any(test, feature = "analytics"))]
 impl ParsedRecord {
-    pub(crate) fn for_test(date: &str, model: &str, cwd: &str, usage: Usage) -> Self {
+    pub fn for_test(date: &str, model: &str, cwd: &str, usage: Usage) -> Self {
         Self {
             usage,
             model: model.to_string(),
@@ -1062,7 +1062,7 @@ fn refresh_daily_cache_skips_the_analytics_store_when_disabled() {
 
 ```rust
 #[cfg(feature = "analytics")]
-pub(crate) mod store;
+pub mod store;
 ```
 
 (`report` (Task 7) stays a private `mod report;` — nothing outside `analytics.rs` needs it directly, only the re-exported functions.)
@@ -1096,14 +1096,14 @@ git commit -m "feat: feed the analytics store from the existing daily-cost refre
 
 - [ ] **Step 1: Declare the `report` module**
 
-In `src/analytics.rs`, add (next to the existing `#[cfg(feature = "analytics")] pub(crate) mod store;` line from Task 6):
+In `src/analytics.rs`, add (next to the existing `#[cfg(feature = "analytics")] pub mod store;` line from Task 6):
 
 ```rust
 #[cfg(feature = "analytics")]
 mod report;
 
 #[cfg(feature = "analytics")]
-pub(crate) use report::{parse_args as parse_report_args, render, Options as ReportOptions};
+pub use report::{parse_args as parse_report_args, render, Options as ReportOptions};
 ```
 
 - [ ] **Step 2: Write the failing tests**
@@ -1122,17 +1122,17 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-pub(crate) enum Format {
+pub enum Format {
     Json,
     Csv,
 }
 
-pub(crate) struct Options {
-    pub(crate) repo_key: Option<String>,
-    pub(crate) from: Option<String>,
-    pub(crate) to: Option<String>,
-    pub(crate) all: bool,
-    pub(crate) format: Format,
+pub struct Options {
+    pub repo_key: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub all: bool,
+    pub format: Format,
 }
 
 struct ReportRow {
@@ -1330,7 +1330,7 @@ Add above the `#[cfg(test)]` block in `src/analytics/report.rs`:
 /// Parses `ferrisbar report`'s own flags. `args` excludes the `report`
 /// token itself. `Err` holds a human-readable message for an unrecognized
 /// flag or one missing its value; the caller prints it to stderr.
-pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
+pub fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut opts = Options {
         repo_key: None,
         from: None,
@@ -1422,7 +1422,7 @@ fn read_all(data_dir: &Path) -> Vec<ReportRow> {
     out
 }
 
-pub(crate) fn render(data_dir: &Path, default_repo_key: &str, opts: &Options) -> String {
+pub fn render(data_dir: &Path, default_repo_key: &str, opts: &Options) -> String {
     let rows = read_all(data_dir);
     if opts.all {
         return render_summary(&rows, opts);

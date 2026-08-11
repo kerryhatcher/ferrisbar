@@ -3,12 +3,32 @@
 //! configured, otherwise the repository's own root folder name. See
 //! docs/superpowers/specs/2026-08-11-repo-cost-analytics-design.md.
 
-use std::path::Path;
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RepoIdentity {
-    pub(crate) key: String,
-    pub(crate) display: String,
+pub struct RepoIdentity {
+    pub key: String,
+    pub display: String,
+}
+
+/// Resolves a worktree/submodule gitdir (e.g. `.git/worktrees/<name>`) to
+/// the *common* git directory shared by every worktree of the same
+/// repository, by following its `commondir` file. An ordinary repository's
+/// `.git` has no `commondir` file and resolves to itself unchanged.
+fn resolve_common_git_dir(git_dir: &Path) -> PathBuf {
+    let Ok(contents) = std::fs::read_to_string(git_dir.join("commondir")) else {
+        return git_dir.to_path_buf();
+    };
+    let relative = contents.trim();
+    if relative.is_empty() {
+        return git_dir.to_path_buf();
+    }
+    let joined = git_dir.join(relative);
+    // Canonicalize to resolve .. and . components, but if that fails
+    // (e.g., path doesn't exist), fall back to the joined path.
+    joined.canonicalize().unwrap_or(joined)
 }
 
 /// Strips scheme, embedded `user[:token]@`, and a trailing `.git`, unifying
@@ -96,7 +116,7 @@ fn cwd_folder_name(cwd: &str) -> String {
 /// `RepoIdentity` — a missing `.git`, an unreadable config, or an
 /// unparseable remote URL all degrade to a `local:` identity rather than
 /// failing.
-pub(crate) fn resolve(cwd: &str) -> RepoIdentity {
+pub fn resolve(cwd: &str) -> RepoIdentity {
     let Some(git_dir) = crate::git::find_git_dir(Path::new(cwd)) else {
         let name = cwd_folder_name(cwd);
         return RepoIdentity {
@@ -104,13 +124,16 @@ pub(crate) fn resolve(cwd: &str) -> RepoIdentity {
             display: name,
         };
     };
-    if let Some(origin) = read_origin_url(&git_dir).and_then(|raw| normalize_remote_url(&raw)) {
+    // For worktrees/submodules, resolve to the common git directory
+    // so we can read the actual config and get the correct repo name.
+    let common_git_dir = resolve_common_git_dir(&git_dir);
+    if let Some(origin) = read_origin_url(&common_git_dir).and_then(|raw| normalize_remote_url(&raw)) {
         return RepoIdentity {
             key: format!("remote:{origin}"),
             display: origin,
         };
     }
-    let name = root_folder_name(&git_dir);
+    let name = root_folder_name(&common_git_dir);
     RepoIdentity {
         key: format!("local:{name}"),
         display: name,
@@ -194,5 +217,85 @@ mod tests {
         let identity = resolve("/does/not/exist/at/all");
         assert_eq!(identity.key, "local:all");
         let _: PathBuf = PathBuf::new(); // silence unused-import warning if any
+    }
+
+    #[test]
+    fn worktree_with_origin_resolves_to_remote_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let main_repo = dir.path().join("main-repo");
+        std::fs::create_dir_all(&main_repo).unwrap();
+
+        // Create main repo's .git with a config containing origin remote
+        let main_git = main_repo.join(".git");
+        std::fs::create_dir_all(&main_git).unwrap();
+        let config = "[remote \"origin\"]\n\turl = https://github.com/test/repo.git\n";
+        std::fs::write(main_git.join("config"), config).unwrap();
+        std::fs::write(main_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        // Create worktree checkout
+        let worktree_dir = dir.path().join("worktree-1");
+        std::fs::create_dir_all(&worktree_dir).unwrap();
+
+        // Create worktree's .git/worktrees/<name> directory
+        let worktree_git = main_git.join("worktrees").join("wt-1");
+        std::fs::create_dir_all(&worktree_git).unwrap();
+
+        // Write commondir to point back to main repo's .git
+        std::fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+
+        // Write .git file (gitdir pointer) in worktree checkout
+        std::fs::write(
+            worktree_dir.join(".git"),
+            format!("gitdir: {}\n", worktree_git.display()),
+        )
+        .unwrap();
+
+        // The worktree should resolve to the same remote identity as the main repo
+        let identity = resolve(worktree_dir.to_str().unwrap());
+        assert_eq!(identity.key, "remote:github.com/test/repo");
+    }
+
+    #[test]
+    fn worktree_without_origin_resolves_to_local_with_main_repo_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let main_repo = dir.path().join("my-project");
+        std::fs::create_dir_all(&main_repo).unwrap();
+
+        // Create main repo's .git without origin
+        let main_git = main_repo.join(".git");
+        std::fs::create_dir_all(&main_git).unwrap();
+        std::fs::write(main_git.join("config"), "").unwrap();
+        std::fs::write(main_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        // Create worktree checkout
+        let worktree_dir = dir.path().join("worktree-2");
+        std::fs::create_dir_all(&worktree_dir).unwrap();
+
+        // Create worktree's .git/worktrees/<name> directory
+        let worktree_git = main_git.join("worktrees").join("wt-2");
+        std::fs::create_dir_all(&worktree_git).unwrap();
+
+        // Write commondir to point back to main repo's .git
+        std::fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+
+        // Write .git file (gitdir pointer) in worktree checkout
+        std::fs::write(
+            worktree_dir.join(".git"),
+            format!("gitdir: {}\n", worktree_git.display()),
+        )
+        .unwrap();
+
+        // The worktree should use the main repo's folder name, not "worktrees"
+        let identity = resolve(worktree_dir.to_str().unwrap());
+        assert_eq!(identity.key, "local:my-project");
+        assert_eq!(identity.display, "my-project");
+    }
+
+    #[test]
+    fn ordinary_repo_without_commondir_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        write_git_dir(dir.path(), Some("https://github.com/org/repo.git"));
+        let identity = resolve(dir.path().to_str().unwrap());
+        assert_eq!(identity.key, "remote:github.com/org/repo");
     }
 }
