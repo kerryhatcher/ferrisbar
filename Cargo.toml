@@ -25,6 +25,10 @@ toml = { version = ">=1.1, <1.2", default-features = false, features = ["std", "
 # rust_backend routes through pure-Rust miniz_oxide instead of libz-sys,
 # keeping a C toolchain out of the build and cargo-geiger's unsafe count down.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Pure-Rust embedded storage for the optional per-repo cost analytics
+# store — no C toolchain, unlike rusqlite/Diesel's SQLite backends. See
+# docs/superpowers/specs/2026-08-11-repo-cost-analytics-design.md.
+redb = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -34,3 +38,6 @@ filetime = "0.2"
 all = "warn"
 pedantic = "warn"
 nursery = "warn"
+
+[features]
+analytics = ["dep:redb"]
