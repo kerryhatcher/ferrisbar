@@ -604,12 +604,8 @@ Create `src/analytics.rs`:
 //! real implementation lives in `store.rs`, compiled only with the feature.
 
 #[cfg(feature = "analytics")]
-mod report;
-#[cfg(feature = "analytics")]
 mod store;
 
-#[cfg(feature = "analytics")]
-pub(crate) use report::{parse_args as parse_report_args, render, Options as ReportOptions};
 #[cfg(feature = "analytics")]
 pub(crate) use store::Sink;
 
@@ -628,7 +624,7 @@ impl Sink {
 }
 ```
 
-(`report` will not exist until Task 7 — leave the `#[cfg(feature = "analytics")] mod report;` and its `use` line in place; they simply won't compile under `--features analytics` until Task 7 lands. This task only builds and tests under the default, non-analytics configuration until Step 6 below.)
+(`report` doesn't exist yet — Task 7 adds its own `mod report;` declaration and `use` line to this file. This task only touches `store`.)
 
 - [ ] **Step 2: Declare the module**
 
@@ -840,7 +836,7 @@ mod tests {
         let mut sink = Sink::new(false, "2026-08-10".to_string(), "2026-08-09".to_string());
         sink.record(&usage_record("2026-08-10", "claude-sonnet-5", "/tmp/repo"), 1.0);
         sink.flush(dir.path());
-        assert!(!store::db_path(dir.path()).exists());
+        assert!(!db_path(dir.path()).exists());
     }
 
     #[test]
@@ -909,38 +905,19 @@ impl ParsedRecord {
 }
 ```
 
-- [ ] **Step 6: Enable the `store` module for this task (temporarily bypassing `report`)**
-
-`src/analytics.rs`'s `#[cfg(feature = "analytics")] mod report;` line references a file that doesn't exist until Task 7, so `cargo test --features analytics` will fail to compile right now with "file not found." Comment that one line and its `use` out for this task only:
-
-```rust
-// #[cfg(feature = "analytics")]
-// mod report;
-
-#[cfg(feature = "analytics")]
-mod store;
-
-// #[cfg(feature = "analytics")]
-// pub(crate) use report::{parse_args as parse_report_args, render, Options as ReportOptions};
-#[cfg(feature = "analytics")]
-pub(crate) use store::Sink;
-```
-
-(Task 7's Step 1 uncomments these.)
-
-- [ ] **Step 7: Run tests to verify they fail, then pass**
+- [ ] **Step 6: Run tests to verify they fail, then pass**
 
 Run: `cargo test --features analytics analytics::store::`
 Expected first: FAIL (`Sink`, `Row`, `decode_key`, `ParsedRecord::for_test` don't exist yet — compile errors) before Steps 4–5's code is in place. After adding it:
 Run: `cargo test --features analytics analytics::store::`
 Expected: PASS, all five tests in `store::tests`.
 
-- [ ] **Step 8: Run the full default-build test suite too**
+- [ ] **Step 7: Run the full default-build test suite too**
 
 Run: `cargo test`
 Expected: PASS — `ParsedRecord::for_test`'s `#[cfg(any(test, feature = "analytics"))]` means it's still compiled (and unused-but-harmless) in a plain `cargo test` run; nothing else in this task touches the non-analytics build.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/analytics.rs src/analytics/store.rs src/cost.rs src/main.rs
@@ -1117,9 +1094,9 @@ git commit -m "feat: feed the analytics store from the existing daily-cost refre
 - Consumes: `store::{TABLE, Row, db_path, decode_key}` (Task 5).
 - Produces: `report::Options { repo_key: Option<String>, from: Option<String>, to: Option<String>, all: bool, format: Format }`, `report::parse_args(args: &[String]) -> Result<Options, String>`, `report::render(data_dir: &Path, default_repo_key: &str, opts: &Options) -> String` — consumed by Task 8's CLI wiring as `analytics::{parse_report_args, render, ReportOptions}`.
 
-- [ ] **Step 1: Uncomment the Task 5 placeholders**
+- [ ] **Step 1: Declare the `report` module**
 
-In `src/analytics.rs`, restore:
+In `src/analytics.rs`, add (next to the existing `#[cfg(feature = "analytics")] pub(crate) mod store;` line from Task 6):
 
 ```rust
 #[cfg(feature = "analytics")]
