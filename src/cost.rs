@@ -330,7 +330,7 @@ const fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn today_utc_date(now_unix_secs: i64) -> String {
+pub fn today_utc_date(now_unix_secs: i64) -> String {
     let (y, m, d) = civil_from_days(now_unix_secs.div_euclid(86_400));
     format!("{y:04}-{m:02}-{d:02}")
 }
@@ -409,7 +409,7 @@ const fn start_of_block5h(now: i64) -> i64 {
     now - 5 * 3600
 }
 
-fn now_unix_secs() -> i64 {
+pub fn now_unix_secs() -> i64 {
     // Safe: `as_secs` cannot exceed i64::MAX for any date this program will
     // ever run on.
     #[allow(clippy::cast_possible_wrap)]

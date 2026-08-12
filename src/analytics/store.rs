@@ -6,7 +6,7 @@
 
 use crate::cost::ParsedRecord;
 use crate::repo_identity::{self, RepoIdentity};
-use redb::TableDefinition;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -144,6 +144,60 @@ impl Sink {
             }
         }
         let _ = txn.commit();
+    }
+}
+
+/// Sums `cost_usd` across every model for today's date and `repo_key`.
+/// `None` means no rows exist for this repo today at all — disabled,
+/// no store yet, or genuinely no activity. `Some(0.0)` is a real,
+/// different case (e.g. today's only activity was an unpriced model)
+/// and is returned as-is; it's `daily_chip`'s job (Task 2), not this
+/// function's, to decide that a zero total isn't worth displaying.
+/// Read-only: never creates the file and never triggers a refresh —
+/// this only ever reads whatever the last background refresh already
+/// committed.
+///
+/// Only called from this module's own tests today; `cost.rs`'s `daily_chip`
+/// gets a real call site starting in Task 2, mirroring `Sink`'s own history
+/// in this file.
+#[allow(dead_code)]
+pub fn today_repo_cost(enabled: bool, data_dir: &Path, repo_key: &str) -> Option<f64> {
+    if !enabled {
+        return None;
+    }
+    let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+    let Ok(db) = redb::Database::open(db_path(data_dir)) else {
+        return None;
+    };
+    let Ok(txn) = db.begin_read() else {
+        return None;
+    };
+    let Ok(table) = txn.open_table(TABLE) else {
+        return None;
+    };
+    let Ok(iter) = table.iter() else {
+        return None;
+    };
+    let mut total = 0.0_f64;
+    let mut found = false;
+    for entry in iter {
+        let Ok((key, value)) = entry else { continue };
+        let Some((date, key_repo, _model)) = decode_key(key.value()) else {
+            continue;
+        };
+        if date != today || key_repo != repo_key {
+            continue;
+        }
+        let Ok(row) = serde_json::from_slice::<Row>(value.value()) else {
+            continue;
+        };
+        total += row.cost_usd;
+        found = true;
+    }
+    if found {
+        Some(total)
+    } else {
+        None
     }
 }
 
@@ -328,5 +382,85 @@ mod tests {
             row.input_tokens, 1000,
             "not 2000 — not summed across flushes"
         );
+    }
+
+    #[test]
+    fn today_repo_cost_sums_across_models_for_the_matching_repo_and_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+
+        let mut sink = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(&usage_record(&today, "claude-sonnet-5", cwd), 2.0);
+        sink.record(&usage_record(&today, "claude-opus-5", cwd), 3.0);
+        sink.flush(dir.path());
+
+        let repo_key = repo_identity::resolve(cwd).key;
+        let total = today_repo_cost(true, dir.path(), &repo_key);
+        assert!(
+            (total.unwrap() - 5.0).abs() < 1e-9,
+            "sums across both models for today"
+        );
+    }
+
+    #[test]
+    fn today_repo_cost_ignores_a_different_repo_or_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let other_repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+        let yesterday = "2020-01-01".to_string(); // definitely not today
+
+        let mut sink = Sink::new(true, today.clone(), yesterday.clone());
+        sink.record(&usage_record(&today, "claude-sonnet-5", cwd), 2.0);
+        sink.record(&usage_record(&yesterday, "claude-sonnet-5", cwd), 9.0); // wrong date
+        sink.flush(dir.path());
+
+        let other_key = repo_identity::resolve(other_repo.path().to_str().unwrap()).key;
+        assert_eq!(
+            today_repo_cost(true, dir.path(), &other_key),
+            None,
+            "a repo with no rows for today must return None, not 0.0"
+        );
+    }
+
+    #[test]
+    fn today_repo_cost_missing_store_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_key = repo_identity::resolve("/does/not/matter").key;
+        assert_eq!(today_repo_cost(true, dir.path(), &repo_key), None);
+    }
+
+    #[test]
+    fn today_repo_cost_disabled_touches_no_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("never-created");
+        let repo_key = repo_identity::resolve("/does/not/matter").key;
+        assert_eq!(today_repo_cost(false, &nonexistent, &repo_key), None);
+        assert!(
+            !nonexistent.exists(),
+            "a disabled query must not create the data directory"
+        );
+    }
+
+    #[test]
+    fn today_repo_cost_a_real_zero_cost_row_is_some_zero_not_none() {
+        // A row genuinely exists for today (e.g. an unpriced model's usage,
+        // recorded with cost 0.0) — this must be distinguished from "no rows
+        // at all," which is what `None` means. Whether a zero total is worth
+        // *displaying* is `daily_chip`'s call (Task 2), not this function's.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+
+        let mut sink = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(&usage_record(&today, "claude-future-model-9", cwd), 0.0);
+        sink.flush(dir.path());
+
+        let repo_key = repo_identity::resolve(cwd).key;
+        assert_eq!(today_repo_cost(true, dir.path(), &repo_key), Some(0.0));
     }
 }
