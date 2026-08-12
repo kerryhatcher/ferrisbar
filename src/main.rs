@@ -111,16 +111,59 @@ fn dispatch_subcommand(cfg: &config::Config, data_dir: Option<&Path>) -> bool {
             }
             true
         }
+        [cmd, rest @ ..] if cmd == "report" => {
+            run_report(data_dir, rest);
+            true
+        }
         _ => {
             let program = env::args().next().unwrap_or_default();
             let program_name = Path::new(&program).file_name().map_or_else(
                 || "ferrisbar".to_string(),
                 |n| n.to_string_lossy().into_owned(),
             );
-            eprintln!("Usage: {program_name} [setup [--project]]");
+            eprintln!("{}", usage_line(&program_name));
             std::process::exit(1);
         }
     }
+}
+
+fn usage_line(program_name: &str) -> String {
+    #[cfg(feature = "analytics")]
+    {
+        format!(
+            "Usage: {program_name} [setup [--project]] [report [--repo KEY] [--from DATE] [--to DATE] [--all] [--format json|csv]]"
+        )
+    }
+    #[cfg(not(feature = "analytics"))]
+    {
+        format!("Usage: {program_name} [setup [--project]]")
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn run_report(data_dir: Option<&Path>, args: &[String]) {
+    let Some(data_dir) = data_dir else {
+        eprintln!("ferrisbar report: no data directory available on this platform");
+        std::process::exit(1);
+    };
+    let opts = match analytics::parse_report_args(args) {
+        Ok(opts) => opts,
+        Err(msg) => {
+            eprintln!("ferrisbar report: {msg}");
+            std::process::exit(1);
+        }
+    };
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let default_key = repo_identity::resolve(&cwd).key;
+    print!("{}", analytics::render(data_dir, &default_key, &opts));
+}
+
+#[cfg(not(feature = "analytics"))]
+fn run_report(_data_dir: Option<&Path>, _args: &[String]) {
+    eprintln!("ferrisbar report: built without the `analytics` feature");
+    std::process::exit(1);
 }
 
 /// Logs the one `debug`-level `render` event per invocation. `used_pct` is
