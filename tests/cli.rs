@@ -366,8 +366,9 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
 // `just test-analytics` recipe). Under a plain `cargo test` this whole
 // block is compiled out by `#[cfg]` and skipped, not failed; the fifth
 // test below, `report_without_the_analytics_feature_exits_nonzero`, is
-// deliberately not gated because it checks the *other* build's behavior
-// (that `report` exits nonzero when the feature is off).
+// gated the opposite way (`#[cfg(not(feature = "analytics"))]`) because it
+// checks the *other* build's behavior (that `report` exits nonzero when
+// the feature is off).
 
 #[cfg(feature = "analytics")]
 fn write_git_remote(repo_root: &Path, url: &str) {
@@ -487,14 +488,12 @@ fn report_with_no_data_yet_prints_an_empty_array_and_exits_zero() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
 }
 
+// Mirror image of the four `#[cfg(feature = "analytics")]` tests above:
+// this one checks the *other* build's behavior (that `report` exits
+// nonzero when the feature is off), so it's gated the opposite way.
+#[cfg(not(feature = "analytics"))]
 #[test]
 fn report_without_the_analytics_feature_exits_nonzero() {
-    // Meaningful only in a build without `analytics`; under
-    // `--features analytics` this assertion would (correctly) fail, so
-    // this test is deliberately not `#[cfg(feature = "analytics")]` —
-    // it documents and checks the *other* build's behavior. Run this
-    // specific test only via `just test` (default build), not
-    // `just test-analytics`.
     let output = run_command(&["report"], &[], None);
     assert!(!output.status.success());
 }
