@@ -230,10 +230,16 @@ fn render_summary(rows: &[ReportRow], opts: &Options) -> String {
         entry.5 += r.cache_read_tokens;
     }
     let mut summary: Vec<_> = totals.into_iter().collect();
+    // Tie-break on the repo key: `totals` is a `HashMap`, so its iteration
+    // order (and thus the order of equal-cost entries after only the cost
+    // comparison below) is nondeterministic across runs. `render`'s raw-row
+    // path already tie-breaks deterministically (`.then_with(|| a.model.cmp(&b.model))`);
+    // this keeps both renderers internally consistent about stable ordering.
     summary.sort_by(|a, b| {
         b.1 .1
             .partial_cmp(&a.1 .1)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
     });
 
     match opts.format {
@@ -506,6 +512,48 @@ mod tests {
             (a["cost_usd"].as_f64().unwrap() - 3.0).abs() < 1e-9,
             "a's two rows sum to 3.0"
         );
+    }
+
+    #[test]
+    fn all_flag_breaks_a_cost_tie_by_repo_key() {
+        // `totals` is built from a `HashMap`, so without a secondary sort
+        // key, two repos with equal summed cost would come out in
+        // HashMap-iteration order — nondeterministic across runs. Repeat
+        // this several times in one process; a flaky secondary sort would
+        // still show it, since std's HashMap's iteration order is seeded
+        // per-process, not per-call.
+        let dir = tempfile::tempdir().unwrap();
+        write_row(
+            dir.path(),
+            "2026-08-10",
+            "local:z",
+            "z",
+            "claude-sonnet-5",
+            4.0,
+        );
+        write_row(
+            dir.path(),
+            "2026-08-10",
+            "local:a",
+            "a",
+            "claude-sonnet-5",
+            4.0,
+        );
+        let opts = Options {
+            all: true,
+            ..default_options()
+        };
+        for _ in 0..5 {
+            let out = render(dir.path(), "local:a", &opts);
+            let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+            let rows = parsed.as_array().unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows[0]["repo"], "local:a",
+                "equal cost must tie-break by repo key, lowest first"
+            );
+            assert_eq!(rows[1]["repo"], "local:z");
+        }
     }
 
     #[test]

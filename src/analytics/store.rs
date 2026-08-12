@@ -251,4 +251,73 @@ mod tests {
         );
         assert_eq!(row.input_tokens, 2000);
     }
+
+    #[test]
+    fn a_yesterday_dated_record_is_written() {
+        // Mirrors `enabled_sink_writes_a_readable_row`, but the record's
+        // date matches the `yesterday` argument to `Sink::new` rather than
+        // `today` — proving the bucketing accepts yesterday, not just today,
+        // rather than only ever proving the negative case (a date that's
+        // neither, per `record_outside_today_or_yesterday_is_dropped`).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+        let mut sink = Sink::new(true, "2026-08-10".to_string(), "2026-08-09".to_string());
+        sink.record(&usage_record("2026-08-09", "claude-sonnet-5", cwd), 4.0);
+        sink.flush(dir.path());
+
+        let db = redb::Database::open(db_path(dir.path())).unwrap();
+        let txn = db.begin_read().unwrap();
+        let table = txn.open_table(TABLE).unwrap();
+        let expected_key = encode_key(
+            "2026-08-09",
+            &repo_identity::resolve(cwd).key,
+            "claude-sonnet-5",
+        );
+        let value = table.get(expected_key.as_str()).unwrap().unwrap();
+        let row: Row = serde_json::from_slice(value.value()).unwrap();
+        assert!((row.cost_usd - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_second_flush_overwrites_rather_than_accumulates() {
+        // The store's whole trustworthiness rests on this: each refresh
+        // recomputes a day's full total from scratch and a second flush for
+        // the same (date, repo, model) key must replace the first pass's
+        // row, not add to it. Two separate `Sink`s (as two separate refresh
+        // runs would produce) write different costs for the same key; only
+        // the second pass's value must remain afterward.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+
+        let mut first_sink = Sink::new(true, "2026-08-10".to_string(), "2026-08-09".to_string());
+        first_sink.record(&usage_record("2026-08-10", "claude-sonnet-5", cwd), 10.0);
+        first_sink.flush(dir.path());
+
+        let mut second_sink = Sink::new(true, "2026-08-10".to_string(), "2026-08-09".to_string());
+        second_sink.record(&usage_record("2026-08-10", "claude-sonnet-5", cwd), 1.0);
+        second_sink.flush(dir.path());
+
+        let db = redb::Database::open(db_path(dir.path())).unwrap();
+        let txn = db.begin_read().unwrap();
+        let table = txn.open_table(TABLE).unwrap();
+        let expected_key = encode_key(
+            "2026-08-10",
+            &repo_identity::resolve(cwd).key,
+            "claude-sonnet-5",
+        );
+        let value = table.get(expected_key.as_str()).unwrap().unwrap();
+        let row: Row = serde_json::from_slice(value.value()).unwrap();
+        assert!(
+            (row.cost_usd - 1.0).abs() < 1e-9,
+            "second flush must overwrite the first pass's row (got {}), not sum \
+             to 11.0 across the two separate flushes",
+            row.cost_usd
+        );
+        assert_eq!(
+            row.input_tokens, 1000,
+            "not 2000 — not summed across flushes"
+        );
+    }
 }
