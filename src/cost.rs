@@ -1405,6 +1405,42 @@ mod tests {
         assert!(chip.contains("$2"), "got: {chip}");
     }
 
+    // Mirrors `daily_chip_appends_the_repo_segment_when_analytics_has_data`
+    // above: it needs `Sink`'s and `today_repo_cost`'s *real* behavior to
+    // produce an actual `Some(0.0)` from a real recorded row (an unpriced
+    // model, cost 0.0 — see `store.rs`'s
+    // `today_repo_cost_a_real_zero_cost_row_is_some_zero_not_none`), then
+    // checks that `daily_chip`'s `.filter(|cost| *cost > 0.0)` still hides
+    // the segment for that real zero, not just for a `None`.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn daily_chip_omits_the_repo_segment_for_a_real_zero_cost_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+        let today = today_utc_date(now_unix_secs());
+        cost_cache::write_cache(
+            dir.path(),
+            &cost_cache::CachePayload {
+                date: today.clone(),
+                total_usd: 4.2,
+                by_model: Vec::new(),
+                ..cost_cache::CachePayload::default()
+            },
+        )
+        .unwrap();
+
+        let mut sink = crate::analytics::Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(
+            &ParsedRecord::for_test(&today, "claude-future-model-9", cwd, Usage::default()),
+            0.0,
+        );
+        sink.flush(dir.path());
+
+        let chip = daily_chip(&CostConfig::default(), Some(dir.path()), cwd, true).unwrap();
+        assert!(!chip.contains("repo"), "got: {chip}");
+    }
+
     #[test]
     fn daily_chip_omits_the_repo_segment_when_analytics_disabled() {
         let dir = tempfile::tempdir().unwrap();
