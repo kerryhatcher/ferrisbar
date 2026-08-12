@@ -498,10 +498,22 @@ fn aggregate_windows(
                 }
             }
             let cost = cost_for(&rec.usage, &rec.model, &pricing);
+            // Every record reaching this point already has non-empty usage
+            // (parse_line's earlier `usage.is_empty()` check), so `cost` can
+            // only be exactly zero here when `resolve_model` can't match an
+            // unrecognized/future model — never a genuinely zero-usage
+            // record. `analytics.record` must see these anyway: it's the
+            // only place raw token counts for an unpriced model are
+            // captured, and this feature has no backfill, so a record
+            // skipped here is lost forever even though re-pricing it later
+            // (once the model is in `pricing.json`) is the whole point of
+            // storing tokens instead of just cost. The daily/weekly/monthly/
+            // block5h bucketing below still only counts genuinely
+            // cost-bearing records, so that behavior is unchanged.
+            analytics.record(&rec, cost);
             if cost <= 0.0 {
                 continue;
             }
-            analytics.record(&rec, cost);
             if rec.date == today {
                 daily_total += cost;
                 *daily_by_model.entry(rec.model.clone()).or_insert(0.0) += cost;
@@ -1118,6 +1130,63 @@ mod tests {
         assert_eq!(windows.weekly_usd, 0.0);
         assert_eq!(windows.monthly_usd, 0.0);
         assert_eq!(windows.block5h_usd, 0.0);
+    }
+
+    /// Regression coverage for the final-review fix that moved
+    /// `analytics.record` above the `cost <= 0.0` early-`continue`: a record
+    /// for a model `resolve_model` can't match (unrecognized/future,
+    /// deliberately not in the bundled `pricing.json`) prices to exactly
+    /// `0.0`, but still has real, non-empty usage — it must still reach the
+    /// analytics store with its token counts intact, not be dropped forever
+    /// (this feature has no backfill). The daily/weekly/monthly/block5h
+    /// totals it does NOT belong in are still asserted zero, proving that
+    /// part of the behavior is unchanged.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn aggregate_windows_still_records_an_unpriced_models_usage_for_analytics() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
+
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[&format!(
+                r#"{{"cwd":"{}","timestamp":"2026-08-10T10:00:00Z","requestId":"req_1","message":{{"model":"claude-future-model-9","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+                repo.path().display()
+            )],
+        );
+
+        let mut analytics =
+            crate::analytics::Sink::new(true, "2026-08-10".to_string(), "2026-08-09".to_string());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
+        // An unrecognized model prices to $0, so it never joins the visible
+        // cost-chip totals.
+        assert_eq!(windows.daily.total_usd, 0.0);
+        assert!(windows.daily.by_model.is_empty());
+
+        let data_dir = tempfile::tempdir().unwrap();
+        analytics.flush(data_dir.path());
+        let db = redb::Database::open(crate::analytics::store::db_path(data_dir.path()))
+            .expect("an unpriced-but-recorded record must still produce a store file");
+        let txn = db.begin_read().unwrap();
+        let table = txn.open_table(crate::analytics::store::TABLE).unwrap();
+        let expected_key = format!(
+            "2026-08-10\0{}\0claude-future-model-9",
+            crate::repo_identity::resolve(repo.path().to_str().unwrap()).key
+        );
+        let value = table
+            .get(expected_key.as_str())
+            .unwrap()
+            .expect("the row must be keyed by the unrecognized model, not silently dropped");
+        let row: crate::analytics::store::Row = serde_json::from_slice(value.value()).unwrap();
+        assert_eq!(row.cost_usd, 0.0, "unpriced: cost is genuinely zero");
+        assert_eq!(
+            row.input_tokens, 1_000_000,
+            "but the raw token count is preserved for later re-pricing"
+        );
     }
 
     #[test]

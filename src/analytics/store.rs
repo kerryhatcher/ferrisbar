@@ -11,15 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-// `TABLE` is exercised by this module's own tests and, from Task 7 on, by
-// `report`'s reader — but nothing in the non-test build calls into `Sink`
-// yet (that's Task 6), so it reads as dead code until then.
-#[allow(dead_code)]
 pub const TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("cost_rows");
 
-// Same story as `TABLE` above: constructed only by `Sink::record` (tested,
-// not yet called from non-test code) until Task 6 lands.
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Row {
     pub repo_display: String,
@@ -31,9 +24,6 @@ pub struct Row {
 }
 
 impl Row {
-    // Only called from `Sink::record`, which is itself unreachable from
-    // `main` until Task 6.
-    #[allow(dead_code)]
     fn accumulate(&mut self, rec: &ParsedRecord, cost: f64) {
         self.cost_usd += cost;
         self.input_tokens += rec.usage.input_tokens;
@@ -43,17 +33,12 @@ impl Row {
     }
 }
 
-// Public for Task 7's report reader; used by `Sink::flush` and this
-// module's tests today, but `flush` itself isn't reachable from `main`
-// until Task 6.
-#[allow(dead_code)]
+// Public for `report`'s reader, which opens the same on-disk database from
+// a fresh path.
 pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("analytics.redb")
 }
 
-// Reachable from `Sink::record` (unreachable until Task 6) and from this
-// module's own tests directly.
-#[allow(dead_code)]
 fn encode_key(date: &str, repo_key: &str, model: &str) -> String {
     format!("{date}\0{repo_key}\0{model}")
 }
@@ -61,8 +46,7 @@ fn encode_key(date: &str, repo_key: &str, model: &str) -> String {
 /// Inverse of `encode_key`. `None` for a key that doesn't split into
 /// exactly three `\0`-separated parts — defensive against a store written
 /// by some future, differently-shaped version of this code.
-// Public for Task 7's report reader; not yet called from non-test code.
-#[allow(dead_code)]
+// Public for `report`'s reader.
 pub fn decode_key(raw: &str) -> Option<(String, String, String)> {
     let mut parts = raw.split('\0');
     let date = parts.next()?.to_string();
@@ -74,11 +58,6 @@ pub fn decode_key(raw: &str) -> Option<(String, String, String)> {
     Some((date, repo_key, model))
 }
 
-// `Sink` and its methods below are exercised only by this module's tests
-// until Task 6 wires a call into `cost.rs`'s transcript-walk hot loop —
-// until then, a `--features analytics` build with no test harness sees no
-// caller and flags the whole type as dead.
-#[allow(dead_code)]
 pub struct Sink {
     enabled: bool,
     today: String,
@@ -87,7 +66,6 @@ pub struct Sink {
     repo_cache: HashMap<String, RepoIdentity>,
 }
 
-#[allow(dead_code)]
 impl Sink {
     pub fn new(enabled: bool, today: String, yesterday: String) -> Self {
         Self {

@@ -9,18 +9,11 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-// Nothing in `main` builds a `Format`, `Options`, or calls `parse_args`/
-// `render` yet — that's Task 8's CLI wiring for the `report` subcommand.
-// Until then, a `--features analytics` build sees no caller and flags this
-// module's public surface (and everything it touches) as dead. Task 7 only
-// builds the report engine; Task 8 is what makes it live.
-#[allow(dead_code)]
 pub enum Format {
     Json,
     Csv,
 }
 
-#[allow(dead_code)]
 pub struct Options {
     pub repo_key: Option<String>,
     pub from: Option<String>,
@@ -29,9 +22,6 @@ pub struct Options {
     pub format: Format,
 }
 
-// Same story as `Format`/`Options` above: only built by `read_all`, itself
-// unreachable from `main` until Task 8.
-#[allow(dead_code)]
 struct ReportRow {
     date: String,
     repo_key: String,
@@ -47,8 +37,6 @@ struct ReportRow {
 /// Parses `ferrisbar report`'s own flags. `args` excludes the `report`
 /// token itself. `Err` holds a human-readable message for an unrecognized
 /// flag or one missing its value; the caller prints it to stderr.
-// Unreachable from `main` until Task 8 wires the `report` subcommand.
-#[allow(dead_code)]
 pub fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut opts = Options {
         repo_key: None,
@@ -89,8 +77,6 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(opts)
 }
 
-// Only called from `parse_args`, itself unreachable until Task 8.
-#[allow(dead_code)]
 fn next_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
     let value = args
         .get(*i + 1)
@@ -100,9 +86,6 @@ fn next_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
     Ok(value)
 }
 
-// Only called from `render`/`render_summary`, themselves unreachable until
-// Task 8.
-#[allow(dead_code)]
 fn in_range(date: &str, from: Option<&str>, to: Option<&str>) -> bool {
     // YYYY-MM-DD sorts lexically the same as chronologically.
     from.is_none_or(|f| date >= f) && to.is_none_or(|t| date <= t)
@@ -111,8 +94,6 @@ fn in_range(date: &str, from: Option<&str>, to: Option<&str>) -> bool {
 /// Every stored row, decoded. A missing/unreadable/corrupt database, or
 /// any individually undecodable row, is skipped rather than failing —
 /// "no data yet" is normal for a freshly enabled feature.
-// Only called from `render`, itself unreachable until Task 8.
-#[allow(dead_code)]
 fn read_all(data_dir: &Path) -> Vec<ReportRow> {
     let Ok(db) = redb::Database::open(db_path(data_dir)) else {
         return Vec::new();
@@ -150,8 +131,6 @@ fn read_all(data_dir: &Path) -> Vec<ReportRow> {
     out
 }
 
-// Unreachable from `main` until Task 8 wires the `report` subcommand.
-#[allow(dead_code)]
 pub fn render(data_dir: &Path, default_repo_key: &str, opts: &Options) -> String {
     let rows = read_all(data_dir);
     if opts.all {
@@ -168,8 +147,6 @@ pub fn render(data_dir: &Path, default_repo_key: &str, opts: &Options) -> String
     render_rows(&filtered, &opts.format)
 }
 
-// Only constructed by `render_rows`, itself unreachable until Task 8.
-#[allow(dead_code)]
 #[derive(Serialize)]
 struct JsonRow<'a> {
     date: &'a str,
@@ -183,8 +160,6 @@ struct JsonRow<'a> {
     cache_read_tokens: u64,
 }
 
-// Only called from `render`, itself unreachable until Task 8.
-#[allow(dead_code)]
 fn render_rows(rows: &[&ReportRow], format: &Format) -> String {
     match format {
         Format::Json => {
@@ -231,9 +206,6 @@ fn render_rows(rows: &[&ReportRow], format: &Format) -> String {
 /// RFC 4180's minimal escaping: wrap in double quotes (doubling any
 /// embedded quote) only when the field contains a comma, quote, or
 /// newline.
-// Only called from `render_rows`/`render_summary`, themselves unreachable
-// until Task 8.
-#[allow(dead_code)]
 fn csv_escape(field: &str) -> String {
     if field.contains(',') || field.contains('"') || field.contains('\n') {
         format!("\"{}\"", field.replace('"', "\"\""))
@@ -242,8 +214,6 @@ fn csv_escape(field: &str) -> String {
     }
 }
 
-// Only called from `render`, itself unreachable until Task 8.
-#[allow(dead_code)]
 fn render_summary(rows: &[ReportRow], opts: &Options) -> String {
     let mut totals: HashMap<String, (String, f64, u64, u64, u64, u64)> = HashMap::new();
     for r in rows {

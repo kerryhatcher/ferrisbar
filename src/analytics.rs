@@ -14,36 +14,25 @@ pub mod store;
 #[cfg(feature = "analytics")]
 mod report;
 
-// `render`/`parse_report_args`/`ReportOptions` and everything they touch in
-// `report` are unreachable from `main` until Task 8 wires this re-export
-// into the CLI's `report` subcommand, so a `--features analytics` build
-// without that wiring yet flags the re-export (and, transitively, `report`'s
-// own items) as dead. Task 7 only builds the report engine; Task 8 is what
-// makes it live.
+// `main.rs`'s `run_report` calls both of these by name; nothing references
+// `report::Options` outside this module, so only the two actually-used items
+// are re-exported.
 #[cfg(feature = "analytics")]
-#[allow(unused_imports)]
-pub use report::{parse_args as parse_report_args, render, Options as ReportOptions};
+pub use report::{parse_args as parse_report_args, render};
 
-// `Sink` and everything it touches in `store` are unreachable from `main`
-// until Task 6 wires this re-export into `cost.rs`'s transcript-walk hot
-// loop, so a `--features analytics` build without that wiring yet flags the
-// re-export (and, transitively, `store`'s own items) as dead. Task 5 only
-// builds the store; Task 6 is what makes it live.
+// `cost.rs`'s transcript-walk hot loop calls this unconditionally (see the
+// module doc comment above), so it's a real, always-live re-export.
 #[cfg(feature = "analytics")]
-#[allow(unused_imports)]
 pub use store::Sink;
 
-// Unreachable until Task 6 wires a call from `cost.rs`'s hot loop, so a
-// plain (no `analytics` feature) build flags this stub as dead code today.
-// It stays defined now, ahead of that caller, because its signature must be
-// pinned to match the real `Sink` in `store.rs` exactly — see the module
-// doc comment above.
+// The zero-cost no-op used in place of `store::Sink` when the `analytics`
+// feature is off. `cost.rs` still constructs and calls it unconditionally
+// (see the module doc comment above), so it is not dead code in a plain
+// build either.
 #[cfg(not(feature = "analytics"))]
-#[allow(dead_code)]
 pub struct Sink;
 
 #[cfg(not(feature = "analytics"))]
-#[allow(dead_code)]
 impl Sink {
     pub fn new(_enabled: bool, _today: String, _yesterday: String) -> Self {
         Self
