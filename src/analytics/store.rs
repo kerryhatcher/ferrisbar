@@ -148,9 +148,10 @@ impl Sink {
 }
 
 /// Sums `cost_usd` across every model for today's date and `repo_key`.
-/// `None` means no rows exist for this repo today at all — disabled,
-/// no store yet, the store being locked by a concurrent refresh, or
-/// mid-repair after an interrupted write, or genuinely no activity.
+/// `None` covers every reason there's nothing to report: disabled, no
+/// store yet, genuinely no activity for this repo today, or the store
+/// being unreadable right now — locked by a concurrent refresh, or
+/// mid-repair after an interrupted write.
 /// `Some(0.0)` is a real, different case (e.g. today's only activity was
 /// an unpriced model) and is returned as-is; it's `daily_chip`'s job
 /// (Task 2), not this function's, to decide that a zero total isn't

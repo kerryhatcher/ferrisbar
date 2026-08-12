@@ -113,7 +113,7 @@ arguments straight through; no other render-path code changes.
 Appended to the existing chip string, separated by `" │ "`:
 
 ```
-$204.10 today (Opus $135 · Sonnet $69) │ repo $12.34
+$204.10 today (Opus $135 · Sonnet $69) │ repo $12
 ```
 
 - Only appended when `today_repo_cost` returns `Some(cost)` and
