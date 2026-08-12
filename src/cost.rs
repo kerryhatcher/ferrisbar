@@ -964,6 +964,22 @@ mod tests {
         std::fs::write(dir.join(name), lines.join("\n")).unwrap();
     }
 
+    /// A path's `Display` form, escaped for embedding in a JSON string
+    /// literal — a Windows path contains backslashes, which JSON treats as
+    /// the start of an escape sequence; a Unix path never does, so this is
+    /// a no-op there. Mirrors `tests/cli.rs`'s `escape_for_string_literal`,
+    /// which exists for exactly this reason; missing it here is what broke
+    /// three of this module's own fixture-embedded `cwd` paths on Windows
+    /// CI (the JSON failed to parse, so `parse_line` silently dropped the
+    /// whole record and the analytics store was never written).
+    ///
+    /// `#[cfg(feature = "analytics")]` because every current caller is —
+    /// this would otherwise be dead code in a default build.
+    #[cfg(feature = "analytics")]
+    fn escape_path_for_json(path: &Path) -> String {
+        path.display().to_string().replace('\\', "\\\\")
+    }
+
     fn usage_line(
         timestamp: &str,
         model: &str,
@@ -1155,7 +1171,7 @@ mod tests {
             "a.jsonl",
             &[&format!(
                 r#"{{"cwd":"{}","timestamp":"2026-08-10T10:00:00Z","requestId":"req_1","message":{{"model":"claude-future-model-9","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
-                repo.path().display()
+                escape_path_for_json(repo.path())
             )],
         );
 
@@ -1396,7 +1412,7 @@ mod tests {
             "a.jsonl",
             &[&format!(
                 r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
-                repo.path().display()
+                escape_path_for_json(repo.path())
             )],
         );
         let data_dir = tempfile::tempdir().unwrap();
@@ -1422,7 +1438,7 @@ mod tests {
             "a.jsonl",
             &[&format!(
                 r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
-                repo.path().display()
+                escape_path_for_json(repo.path())
             )],
         );
         let data_dir = tempfile::tempdir().unwrap();
