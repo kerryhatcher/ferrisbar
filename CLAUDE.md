@@ -23,7 +23,10 @@ audit, msrv, deny, trivy, vet, and geiger, failing fast. `just fmt` is
   the payload, `toml` for the config file, `flate2` for log rotation. A
   fifth needs a justification and a `cargo vet` entry in `supply-chain/`.
   `toml` is version-pinned below 1.2 because it sits one patch under our
-  MSRV floor.
+  MSRV floor. `redb` is the fifth: it backs the optional per-repo cost
+  analytics store, has both a justification and a vet entry, and is
+  `optional = true` — off unless `--features analytics` is passed, so the
+  default build's dependency count is unchanged.
 
 ## Code standards
 

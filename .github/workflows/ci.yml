@@ -61,6 +61,11 @@ jobs:
         with:
           tool: just
       - run: just test
+      # src/analytics/* and the redb dependency are only compiled with this
+      # feature on, so the plain `just test` above never touches them —
+      # this is the only place either gets built under the pinned MSRV
+      # toolchain.
+      - run: cargo check --features analytics
 
   security:
     name: security

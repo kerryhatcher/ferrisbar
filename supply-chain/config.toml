@@ -60,6 +60,7 @@ criteria = "safe-to-deploy"
 [[exemptions.libc]]
 version = "0.2.189"
 criteria = "safe-to-deploy"
+notes = "Bumped from safe-to-run: redb (optional, analytics feature) pulls libc into the runtime/shipped dependency graph, not just dev/test, requiring the stronger criterion."
 
 [[exemptions.linux-raw-sys]]
 version = "0.12.1"

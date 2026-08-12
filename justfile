@@ -36,6 +36,15 @@ audit:
 msrv:
     cargo msrv verify
 
+# Same as `msrv`, but under `--features analytics` — the plain `msrv` recipe
+# only ever checks the default build, so src/analytics/* and the `redb`
+# dependency were never compiled under the pinned toolchain by anything in
+# this repo's checks. `cargo msrv verify` accepts a custom check command
+# after `--`, which is how this scopes the same MSRV-toolchain check to the
+# analytics feature instead of rediscovering the MSRV itself.
+msrv-analytics:
+    cargo msrv verify -- cargo check --features analytics
+
 # Check licenses, banned crates, duplicate versions, and dependency sources
 # (see deny.toml).
 deny:
@@ -66,4 +75,4 @@ geiger:
     -cargo geiger
 
 # Run every check. Fails fast on the first failing recipe.
-ci: fmt lint lint-analytics test test-analytics audit msrv deny deny-analytics trivy vet geiger
+ci: fmt lint lint-analytics test test-analytics audit msrv msrv-analytics deny deny-analytics trivy vet geiger
