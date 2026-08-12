@@ -26,6 +26,7 @@ jobs:
         with:
           tool: just
       - run: just test
+      - run: just test-analytics
 
   lint:
     name: lint
@@ -42,6 +43,7 @@ jobs:
           tool: just
       - run: just fmt
       - run: just lint
+      - run: just lint-analytics
 
   # Pins the exact toolchain from Cargo.toml's rust-version and runs the
   # test suite under it — verifies the declared MSRV, doesn't rediscover it
@@ -74,6 +76,7 @@ jobs:
           tool: just,cargo-audit,cargo-deny,cargo-geiger
       - run: just audit
       - run: just deny
+      - run: just deny-analytics
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs

@@ -16,6 +16,17 @@ lint:
 test:
     cargo test
 
+# Run the test suite with the analytics feature enabled — the default
+# `test` recipe never compiles src/analytics/store.rs or report.rs at
+# all, since the feature is optional and off by default.
+test-analytics:
+    cargo test --features analytics
+
+# Lint the analytics feature's code the same way `lint` covers the
+# default build.
+lint-analytics:
+    cargo clippy --all-targets --features analytics -- -D warnings
+
 # Check dependencies against the RustSec advisory database.
 audit:
     cargo audit
@@ -29,6 +40,14 @@ msrv:
 # (see deny.toml).
 deny:
     cargo deny check
+
+# Check licenses/bans for redb (and any of its transitive deps) too —
+# deny.toml's [graph] all-features = false means the default `deny`
+# recipe skips anything gated behind an inactive feature. Note:
+# --all-features is a global cargo-deny flag, so it must precede the
+# `check` subcommand — `cargo deny check --all-features` errors out.
+deny-analytics:
+    cargo deny --all-features check
 
 # Scan the filesystem for known vulnerabilities and hardcoded secrets.
 trivy:
@@ -47,4 +66,4 @@ geiger:
     -cargo geiger
 
 # Run every check. Fails fast on the first failing recipe.
-ci: fmt lint test audit msrv deny trivy vet geiger
+ci: fmt lint lint-analytics test test-analytics audit msrv deny deny-analytics trivy vet geiger
