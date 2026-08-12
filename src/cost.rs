@@ -637,14 +637,6 @@ fn fresh_same_day_cache(ttl_seconds: u64, data_dir: &Path) -> Option<cost_cache:
     Some(payload)
 }
 
-/// The daily cost chip for the statusline's second line, or `None` when the
-/// feature is disabled, no data directory is available, or no cache has
-/// been populated yet (the first-ever render after install has nothing to
-/// show until the background refresh it triggers completes).
-///
-/// Never blocks: a stale or missing cache triggers `cost_cache::spawn_refresh`
-/// (a detached, non-blocking re-invocation of this binary) and this render
-/// still uses whatever cache is currently on disk, even if stale.
 /// Formats the segment appended to the daily chip when today's per-repo
 /// total is available and positive: `repo $X.XX` (or `repo $Y` once the
 /// amount reaches a whole dollar), matching `format_daily_chip`'s own
@@ -658,6 +650,14 @@ fn format_repo_segment(cost: f64) -> String {
     format!("{DIM}repo{RESET} {GREEN}{amount}{RESET}")
 }
 
+/// The daily cost chip for the statusline's second line, or `None` when the
+/// feature is disabled, no data directory is available, or no cache has
+/// been populated yet (the first-ever render after install has nothing to
+/// show until the background refresh it triggers completes).
+///
+/// Never blocks: a stale or missing cache triggers `cost_cache::spawn_refresh`
+/// (a detached, non-blocking re-invocation of this binary) and this render
+/// still uses whatever cache is currently on disk, even if stale.
 pub fn daily_chip(
     cfg: &CostConfig,
     data_dir: Option<&Path>,
