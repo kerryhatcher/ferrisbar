@@ -136,9 +136,17 @@ $204.10 today (Opus $135 · Sonnet $69) │ repo $12.34
 - A slow or failing redb open cannot block or corrupt the rest of the
   statusline: worst case, this one segment is silently absent for that
   render while everything else prints normally.
-- No new background job, no new lock file, no interaction with the
-  existing refresh's lock — this is a pure reader against whatever the
-  last refresh already committed.
+- No new background job and no new lock file, but this is not entirely
+  lock-free: `redb::Database::open` takes an exclusive advisory file
+  lock (this version of redb has no read-only open mode), so it does
+  contend with the existing refresh's writer, and if a refresh process
+  were ever killed mid-commit, the next `open` — including this one —
+  can run synchronous repair before returning. Both are non-blocking in
+  the sense that matters (no wait/retry loop here, and a lost lock race
+  or mid-repair open just yields `None` for that render) and
+  self-healing (the next refresh fully recomputes and overwrites), so
+  this stays a pure reader that never mutates the store, just not one
+  that is fully isolated from the writer's lock.
 
 ## Testing
 

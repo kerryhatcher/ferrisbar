@@ -655,9 +655,16 @@ fn format_repo_segment(cost: f64) -> String {
 /// been populated yet (the first-ever render after install has nothing to
 /// show until the background refresh it triggers completes).
 ///
-/// Never blocks: a stale or missing cache triggers `cost_cache::spawn_refresh`
-/// (a detached, non-blocking re-invocation of this binary) and this render
-/// still uses whatever cache is currently on disk, even if stale.
+/// A stale or missing cache triggers `cost_cache::spawn_refresh` (a
+/// detached, non-blocking re-invocation of this binary) rather than a
+/// blocking recompute, and this render still uses whatever cache is
+/// currently on disk, even if stale. When analytics is enabled, appending
+/// the repo segment opens the analytics store directly (`today_repo_cost`),
+/// which can very briefly contend with a concurrent background refresh's
+/// advisory file lock and, rarely, trigger redb's own repair-on-open after
+/// an interrupted write — this render never joins a wait/retry loop for
+/// either case, and any failure in that path still degrades to "no
+/// segment," never a panic or a broken render.
 pub fn daily_chip(
     cfg: &CostConfig,
     data_dir: Option<&Path>,
