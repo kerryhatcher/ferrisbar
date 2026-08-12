@@ -441,7 +441,12 @@ pub struct WindowTotals {
 /// still keys the daily total by date string (matching the on-disk cache's
 /// existing staleness check); the other three windows compare directly
 /// against `now`-derived boundaries.
-fn aggregate_windows(transcripts_root: &Path, now: i64, today: &str) -> WindowTotals {
+fn aggregate_windows(
+    transcripts_root: &Path,
+    now: i64,
+    today: &str,
+    analytics: &mut crate::analytics::Sink,
+) -> WindowTotals {
     let pricing = load_pricing();
     let week_start = start_of_week(now);
     let month_start = start_of_month(now);
@@ -496,6 +501,7 @@ fn aggregate_windows(transcripts_root: &Path, now: i64, today: &str) -> WindowTo
             if cost <= 0.0 {
                 continue;
             }
+            analytics.record(&rec, cost);
             if rec.date == today {
                 daily_total += cost;
                 *daily_by_model.entry(rec.model.clone()).or_insert(0.0) += cost;
@@ -570,10 +576,13 @@ fn format_daily_chip(daily: &DailyTotal, min_usd: f64) -> String {
 /// construction — a write failure is swallowed by `cost_cache::write_cache`,
 /// and the lock is always released so a stuck refresh cannot wedge every
 /// later render out of ever retrying.
-pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path) {
+pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path, analytics_enabled: bool) {
     let now = now_unix_secs();
     let today = today_utc_date(now);
-    let windows = aggregate_windows(transcripts_root, now, &today);
+    let yesterday = today_utc_date(now - 86_400);
+    let mut analytics = crate::analytics::Sink::new(analytics_enabled, today.clone(), yesterday);
+    let windows = aggregate_windows(transcripts_root, now, &today, &mut analytics);
+    analytics.flush(data_dir);
     let payload = cost_cache::CachePayload {
         date: today,
         total_usd: windows.daily.total_usd,
@@ -1000,7 +1009,8 @@ mod tests {
             ],
         );
 
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
 
         // sonnet-5 input rate is $2/Mtok, so one deduped 1M-token message = $2.
         // opus-4-8 input rate is $5/Mtok, so one 1M-token message = $5.
@@ -1034,7 +1044,8 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
 
         let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
         assert!(
             (windows.daily.total_usd - 2.0).abs() < 1e-9,
             "the valid line after the malformed one must still be counted"
@@ -1059,7 +1070,13 @@ mod tests {
     #[test]
     fn aggregate_windows_ignores_unreadable_root() {
         let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
-        let windows = aggregate_windows(Path::new("/does/not/exist"), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(
+            Path::new("/does/not/exist"),
+            now,
+            "2026-08-10",
+            &mut analytics,
+        );
         assert_eq!(windows.daily.total_usd, 0.0);
         assert!(windows.daily.by_model.is_empty());
         assert_eq!(windows.weekly_usd, 0.0);
@@ -1089,7 +1106,8 @@ mod tests {
             ],
         );
 
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
         assert_eq!(windows.daily.total_usd, 0.0);
         assert_eq!(windows.weekly_usd, 0.0);
         assert_eq!(windows.monthly_usd, 0.0);
@@ -1281,10 +1299,62 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(dir.path().join("cost-cache.lock"), b"").unwrap();
 
-        refresh_daily_cache(&root, dir.path());
+        refresh_daily_cache(&root, dir.path(), false);
 
         assert!(dir.path().join("cost-cache.json").exists());
         assert!(!dir.path().join("cost-cache.lock").exists());
+    }
+
+    // `analytics::store` (and its `db_path`) only exists when the `analytics`
+    // feature is compiled in; a plain build has nothing on disk for these
+    // two tests to inspect.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn refresh_daily_cache_populates_the_analytics_store_when_enabled() {
+        let transcripts = tempfile::tempdir().unwrap();
+        let sub = transcripts.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let today = today_utc_date(now_unix_secs());
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[&format!(
+                r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+                repo.path().display()
+            )],
+        );
+        let data_dir = tempfile::tempdir().unwrap();
+
+        refresh_daily_cache(transcripts.path(), data_dir.path(), true);
+
+        assert!(
+            crate::analytics::store::db_path(data_dir.path()).exists(),
+            "an enabled refresh with cost-bearing, cwd-tagged usage must write the analytics store"
+        );
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn refresh_daily_cache_skips_the_analytics_store_when_disabled() {
+        let transcripts = tempfile::tempdir().unwrap();
+        let sub = transcripts.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let today = today_utc_date(now_unix_secs());
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[&format!(
+                r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+                repo.path().display()
+            )],
+        );
+        let data_dir = tempfile::tempdir().unwrap();
+
+        refresh_daily_cache(transcripts.path(), data_dir.path(), false);
+
+        assert!(!crate::analytics::store::db_path(data_dir.path()).exists());
     }
 
     #[test]

@@ -89,7 +89,11 @@ fn dispatch_subcommand(cfg: &config::Config, data_dir: Option<&Path>) -> bool {
         [] => false,
         [cmd] if cmd == "--internal-refresh-daily-cost" => {
             if let Some(data_dir) = data_dir {
-                cost::refresh_daily_cache(&resolve_transcripts_dir(cfg), data_dir);
+                cost::refresh_daily_cache(
+                    &resolve_transcripts_dir(cfg),
+                    data_dir,
+                    cfg.analytics.enabled,
+                );
             }
             true
         }

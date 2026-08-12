@@ -9,7 +9,7 @@
 //! real implementation lives in `store.rs`, compiled only with the feature.
 
 #[cfg(feature = "analytics")]
-mod store;
+pub mod store;
 
 // `Sink` and everything it touches in `store` are unreachable from `main`
 // until Task 6 wires this re-export into `cost.rs`'s transcript-walk hot
