@@ -203,6 +203,25 @@ pub struct ParsedRecord {
     pub cwd: Option<String>,
 }
 
+#[cfg(any(test, feature = "analytics"))]
+impl ParsedRecord {
+    // Only called from tests today. It also compiles into a plain
+    // `--features analytics` build (no `cfg(test)`) for `analytics::store`'s
+    // own tests to use, where it's unused-but-harmless until Task 6 gives
+    // `analytics::Sink` a real caller in this module's hot loop.
+    #[allow(dead_code)]
+    pub fn for_test(date: &str, model: &str, cwd: &str, usage: Usage) -> Self {
+        Self {
+            usage,
+            model: model.to_string(),
+            date: date.to_string(),
+            timestamp_unix: None,
+            dedup_key: None,
+            cwd: Some(cwd.to_string()),
+        }
+    }
+}
+
 /// `None` for anything that is not a usage-bearing assistant message —
 /// absent/malformed JSON, no usage block, an all-zero usage block, or a
 /// timestamp too short to hold a date. Transcript shapes drift across

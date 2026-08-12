@@ -1,3 +1,4 @@
+mod analytics;
 mod config;
 mod config_dir;
 mod context_bar;
