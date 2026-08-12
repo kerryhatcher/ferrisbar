@@ -4,11 +4,18 @@
 //! docs/superpowers/specs/2026-08-11-repo-cost-analytics-design.md.
 //!
 //! This module itself is not feature-gated (it's plain, dependency-free
-//! Rust), but its only real callers — `analytics::store::Sink::record` and
-//! `main.rs`'s `run_report` — are both behind `#[cfg(feature = "analytics")]`.
-//! In a default build `resolve` and everything it calls are genuinely
-//! unreachable outside tests, hence the module-wide allow below rather than
-//! one scattered across every function.
+//! Rust). `resolve` — and everything it calls — is no longer unreachable
+//! in a default build: `cost::daily_chip` now calls it too, when
+//! `analytics_enabled` is true, to key the repo-cost segment, alongside
+//! its other callers,
+//! `analytics::store::Sink::record` and `main.rs`'s `run_report`, which
+//! are behind `#[cfg(feature = "analytics")]`. `daily_chip` only reads
+//! `RepoIdentity::key`, not `display` — but `display` stays non-dead in a
+//! default build regardless, since `RepoIdentity`'s `Debug`/`Clone`/
+//! `PartialEq` derives already read every field. The `#![allow(dead_code)]`
+//! below isn't silencing an active warning today; it's a guard against one
+//! reappearing if a future change trims those derives or the `daily_chip`
+//! call site.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

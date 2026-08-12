@@ -236,7 +236,7 @@ A second line, when the daily-cost cache has data, adds today's total across
 every session with a per-model split:
 
 ```text
-$4.81 today (Sonnet $3 · Opus $2)
+$4.81 today (Sonnet $3 · Opus $2) │ repo $1
 ```
 
 ## 🧰 Configuration
@@ -344,8 +344,13 @@ the feature and `enabled = true` are set, the same background refresh
 that computes the daily-cost chip also resolves each transcript record's
 git repository (its `origin` remote, normalized, or the repo's own
 folder name when there is no remote) and records that day's cost and
-token totals per repo and model to `<data dir>/analytics.redb`. The
-`ferrisbar report` subcommand reads that store:
+token totals per repo and model to `<data dir>/analytics.redb`. There is
+no separate toggle for the statusline itself: enabling analytics also
+appends today's total for the *current* repo to the daily-cost line —
+`repo $1` (or `repo $0.60` below a dollar) — whenever that repo has a positive tracked total for today;
+it stays absent otherwise, including while `enabled = true` but no data
+has been recorded yet. The `ferrisbar report` subcommand reads that
+store:
 
 ```bash
 ferrisbar report                              # this repo, full history, JSON

@@ -147,6 +147,71 @@ impl Sink {
     }
 }
 
+/// Sums `cost_usd` across every model for today's date and `repo_key`.
+/// `None` covers every reason there's nothing to report: disabled, no
+/// store yet, genuinely no activity for this repo today, or the store
+/// being unreadable right now — locked by a concurrent refresh, or
+/// mid-repair after an interrupted write.
+/// `Some(0.0)` is a real, different case (e.g. today's only activity was
+/// an unpriced model) and is returned as-is; it's `daily_chip`'s job
+/// (Task 2), not this function's, to decide that a zero total isn't
+/// worth displaying.
+/// Read-only: never creates the file and never triggers a refresh —
+/// this only ever reads whatever the last background refresh already
+/// committed.
+///
+/// `cost.rs`'s `daily_chip` calls this (Task 2), mirroring `Sink`'s own
+/// history in this file.
+pub fn today_repo_cost(enabled: bool, data_dir: &Path, repo_key: &str) -> Option<f64> {
+    if !enabled {
+        return None;
+    }
+    let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+    let Ok(db) = redb::Database::open(db_path(data_dir)) else {
+        return None;
+    };
+    let Ok(txn) = db.begin_read() else {
+        return None;
+    };
+    let Ok(table) = txn.open_table(TABLE) else {
+        return None;
+    };
+    // Keys are `date\0repo_key\0model`, and redb's `&str` keys sort in
+    // plain lexicographic byte order, so every row for `today` — any repo,
+    // any model — falls in `"{today}\0" .. "{today}\u{1}"`: `\0` (0x00) is
+    // the smallest possible byte, so "{today}\0" followed by *anything*
+    // still sorts below "{today}\u{1}" (0x01) at that same position, and
+    // `today` itself is a fixed-width `YYYY-MM-DD` string, so it is never a
+    // byte-prefix of a different date. Bounding the scan this way touches
+    // only today's rows instead of the table's entire un-pruned history, so
+    // the date half of the old per-row filter below is no longer needed —
+    // only the repo check remains.
+    let range_start = format!("{today}\0");
+    let range_end = format!("{today}\u{1}");
+    let Ok(iter) = table.range(range_start.as_str()..range_end.as_str()) else {
+        return None;
+    };
+    let mut total = 0.0_f64;
+    let mut found = false;
+    for entry in iter {
+        let Ok((key, value)) = entry else { return None };
+        let (_date, key_repo, _model) = decode_key(key.value())?;
+        if key_repo != repo_key {
+            continue;
+        }
+        let Ok(row) = serde_json::from_slice::<Row>(value.value()) else {
+            return None;
+        };
+        total += row.cost_usd;
+        found = true;
+    }
+    if found {
+        Some(total)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +393,159 @@ mod tests {
             row.input_tokens, 1000,
             "not 2000 — not summed across flushes"
         );
+    }
+
+    #[test]
+    fn today_repo_cost_sums_across_models_for_the_matching_repo_and_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+
+        let mut sink = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(&usage_record(&today, "claude-sonnet-5", cwd), 2.0);
+        sink.record(&usage_record(&today, "claude-opus-5", cwd), 3.0);
+        sink.flush(dir.path());
+
+        let repo_key = repo_identity::resolve(cwd).key;
+        let total = today_repo_cost(true, dir.path(), &repo_key);
+        assert!(
+            (total.unwrap() - 5.0).abs() < 1e-9,
+            "sums across both models for today"
+        );
+    }
+
+    #[test]
+    fn today_repo_cost_ignores_a_different_repo_or_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let other_repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+        let yesterday = "2020-01-01".to_string(); // definitely not today
+
+        let mut sink = Sink::new(true, today.clone(), yesterday.clone());
+        sink.record(&usage_record(&today, "claude-sonnet-5", cwd), 2.0);
+        sink.record(&usage_record(&yesterday, "claude-sonnet-5", cwd), 9.0); // wrong date
+        sink.flush(dir.path());
+
+        let other_key = repo_identity::resolve(other_repo.path().to_str().unwrap()).key;
+        assert_eq!(
+            today_repo_cost(true, dir.path(), &other_key),
+            None,
+            "a repo with no rows for today must return None, not 0.0"
+        );
+    }
+
+    // Guards the range-scan's bounds specifically: seeds rows for dates
+    // that sort both lexicographically before ("2020-01-01") and after
+    // ("9999-12-31") today, plus a second repo on today's own date, all in
+    // the same store, and confirms `today_repo_cost` sums only the rows
+    // that are actually today's date *and* the target repo. An off-by-one
+    // in either bound of `"{today}\0" .. "{today}\u{1}"` would pull in one
+    // of the out-of-range dates here; a bound that's too narrow would drop
+    // today's own row.
+    #[test]
+    fn today_repo_cost_range_scan_excludes_other_dates_and_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let other_repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let other_cwd = other_repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+        let before_today = "2020-01-01".to_string(); // sorts before any real "today"
+        let after_today = "9999-12-31".to_string(); // sorts after any real "today"
+
+        // Sink only accepts records dated "today" or "yesterday" relative to
+        // its own construction, so each out-of-range date needs its own
+        // `Sink` constructed with that date as its "today" to get a real row
+        // written for it.
+        let mut sink_before = Sink::new(true, before_today.clone(), "1970-01-01".to_string());
+        sink_before.record(&usage_record(&before_today, "claude-sonnet-5", cwd), 5.0);
+        sink_before.flush(dir.path());
+
+        let mut sink_after = Sink::new(true, after_today.clone(), "1970-01-01".to_string());
+        sink_after.record(&usage_record(&after_today, "claude-sonnet-5", cwd), 7.0);
+        sink_after.flush(dir.path());
+
+        let mut sink_today = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink_today.record(&usage_record(&today, "claude-sonnet-5", cwd), 3.0);
+        sink_today.record(&usage_record(&today, "claude-sonnet-5", other_cwd), 100.0);
+        sink_today.flush(dir.path());
+
+        let repo_key = repo_identity::resolve(cwd).key;
+        let total = today_repo_cost(true, dir.path(), &repo_key);
+        assert!(
+            (total.unwrap() - 3.0).abs() < 1e-9,
+            "expected only today's $3.00 row for this repo, got {total:?}"
+        );
+    }
+
+    #[test]
+    fn today_repo_cost_missing_store_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_key = repo_identity::resolve("/does/not/matter").key;
+        assert_eq!(today_repo_cost(true, dir.path(), &repo_key), None);
+    }
+
+    #[test]
+    fn today_repo_cost_disabled_touches_no_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("never-created");
+        let repo_key = repo_identity::resolve("/does/not/matter").key;
+        assert_eq!(today_repo_cost(false, &nonexistent, &repo_key), None);
+        assert!(
+            !nonexistent.exists(),
+            "a disabled query must not create the data directory"
+        );
+    }
+
+    #[test]
+    fn today_repo_cost_a_real_zero_cost_row_is_some_zero_not_none() {
+        // A row genuinely exists for today (e.g. an unpriced model's usage,
+        // recorded with cost 0.0) — this must be distinguished from "no rows
+        // at all," which is what `None` means. Whether a zero total is worth
+        // *displaying* is `daily_chip`'s call (Task 2), not this function's.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+
+        let mut sink = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(&usage_record(&today, "claude-future-model-9", cwd), 0.0);
+        sink.flush(dir.path());
+
+        let repo_key = repo_identity::resolve(cwd).key;
+        assert_eq!(today_repo_cost(true, dir.path(), &repo_key), Some(0.0));
+    }
+
+    #[test]
+    fn today_repo_cost_returns_none_when_a_matching_row_is_malformed() {
+        // One valid row plus one malformed row, both for today's date and
+        // the same repo: a partial total from just the valid row would be
+        // as misleading as it is silent, so this must be `None`, not a sum
+        // that quietly drops the bad row.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+        let repo_key = repo_identity::resolve(cwd).key;
+
+        let mut sink = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(&usage_record(&today, "claude-sonnet-5", cwd), 2.0);
+        sink.flush(dir.path());
+
+        // `Sink`/`flush` only ever write valid `Row` JSON, so the malformed
+        // row has to be inserted directly, bypassing that path.
+        let db = redb::Database::create(db_path(dir.path())).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(TABLE).unwrap();
+            let key = encode_key(&today, &repo_key, "claude-opus-5");
+            table.insert(key.as_str(), b"not json".as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+
+        assert_eq!(today_repo_cost(true, dir.path(), &repo_key), None);
     }
 }

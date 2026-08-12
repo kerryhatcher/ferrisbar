@@ -330,7 +330,7 @@ const fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn today_utc_date(now_unix_secs: i64) -> String {
+pub fn today_utc_date(now_unix_secs: i64) -> String {
     let (y, m, d) = civil_from_days(now_unix_secs.div_euclid(86_400));
     format!("{y:04}-{m:02}-{d:02}")
 }
@@ -409,7 +409,7 @@ const fn start_of_block5h(now: i64) -> i64 {
     now - 5 * 3600
 }
 
-fn now_unix_secs() -> i64 {
+pub fn now_unix_secs() -> i64 {
     // Safe: `as_secs` cannot exceed i64::MAX for any date this program will
     // ever run on.
     #[allow(clippy::cast_possible_wrap)]
@@ -637,24 +637,59 @@ fn fresh_same_day_cache(ttl_seconds: u64, data_dir: &Path) -> Option<cost_cache:
     Some(payload)
 }
 
+/// Formats the segment appended to the daily chip when today's per-repo
+/// total is available and positive: `repo $X.XX` (or `repo $Y` once the
+/// amount reaches a whole dollar), matching `format_daily_chip`'s own
+/// cents-vs-whole-dollar rule.
+fn format_repo_segment(cost: f64) -> String {
+    let amount = if cost < 1.0 {
+        format!("${cost:.2}")
+    } else {
+        format!("${cost:.0}")
+    };
+    format!("{DIM}repo{RESET} {GREEN}{amount}{RESET}")
+}
+
 /// The daily cost chip for the statusline's second line, or `None` when the
 /// feature is disabled, no data directory is available, or no cache has
 /// been populated yet (the first-ever render after install has nothing to
 /// show until the background refresh it triggers completes).
 ///
-/// Never blocks: a stale or missing cache triggers `cost_cache::spawn_refresh`
-/// (a detached, non-blocking re-invocation of this binary) and this render
-/// still uses whatever cache is currently on disk, even if stale.
-pub fn daily_chip(cfg: &CostConfig, data_dir: Option<&Path>) -> Option<String> {
+/// A stale or missing cache triggers `cost_cache::spawn_refresh` (a
+/// detached, non-blocking re-invocation of this binary) rather than a
+/// blocking recompute, and this render still uses whatever cache is
+/// currently on disk, even if stale. When analytics is enabled, appending
+/// the repo segment opens the analytics store directly (`today_repo_cost`),
+/// which can very briefly contend with a concurrent background refresh's
+/// advisory file lock and, rarely, trigger redb's own repair-on-open after
+/// an interrupted write — this render never joins a wait/retry loop for
+/// either case, and any failure in that path still degrades to "no
+/// segment," never a panic or a broken render.
+pub fn daily_chip(
+    cfg: &CostConfig,
+    data_dir: Option<&Path>,
+    cwd: &str,
+    analytics_enabled: bool,
+) -> Option<String> {
     if !cfg.show_daily {
         return None;
     }
-    let payload = fresh_same_day_cache(cfg.ttl_seconds, data_dir?)?;
+    let data_dir = data_dir?;
+    let payload = fresh_same_day_cache(cfg.ttl_seconds, data_dir)?;
     let daily = DailyTotal {
         total_usd: payload.total_usd,
         by_model: payload.by_model,
     };
-    Some(format_daily_chip(&daily, cfg.breakdown_min_usd))
+    let mut chip = format_daily_chip(&daily, cfg.breakdown_min_usd);
+    if analytics_enabled && cfg!(feature = "analytics") {
+        let repo_key = crate::repo_identity::resolve(cwd).key;
+        let repo_cost =
+            crate::analytics::today_repo_cost(true, data_dir, &repo_key).filter(|cost| *cost > 0.0);
+        if let Some(cost) = repo_cost {
+            let _ = write!(chip, " {DIM}│{RESET} {}", format_repo_segment(cost));
+        }
+    }
+    Some(chip)
 }
 
 /// A tiered-color mini progress bar for one budget window: `label` dimmed,
@@ -1307,12 +1342,141 @@ mod tests {
     }
 
     #[test]
+    fn format_repo_segment_keeps_cents_under_a_dollar() {
+        assert_eq!(
+            format_repo_segment(0.5),
+            format!("{DIM}repo{RESET} {GREEN}$0.50{RESET}")
+        );
+    }
+
+    #[test]
+    fn format_repo_segment_rounds_to_whole_dollars_at_and_above_one() {
+        assert_eq!(
+            format_repo_segment(12.34),
+            format!("{DIM}repo{RESET} {GREEN}$12{RESET}")
+        );
+    }
+
+    // This test relies on `Sink`'s and `today_repo_cost`'s *real* behavior
+    // (an actual redb write, then an actual read-back) to prove the segment
+    // appears — under a plain build both are no-op stubs with the same
+    // signatures, so this would compile but fail its assertions at runtime
+    // rather than fail to compile. Gate it so it only runs where it's
+    // meaningful; `daily_chip_omits_the_repo_segment_when_analytics_disabled`
+    // below needs no such gate, since it passes `analytics_enabled: false`
+    // and never touches `Sink`/`today_repo_cost` in either build.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn daily_chip_appends_the_repo_segment_when_analytics_has_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+        let today = today_utc_date(now_unix_secs());
+        cost_cache::write_cache(
+            dir.path(),
+            &cost_cache::CachePayload {
+                date: today.clone(),
+                total_usd: 4.2,
+                by_model: Vec::new(),
+                ..cost_cache::CachePayload::default()
+            },
+        )
+        .unwrap();
+
+        let mut sink = crate::analytics::Sink::new(true, today, "1970-01-01".to_string());
+        sink.record(
+            &ParsedRecord::for_test(
+                &today_utc_date(now_unix_secs()),
+                "claude-sonnet-5",
+                cwd,
+                Usage {
+                    input_tokens: 1_000_000,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: 0,
+                },
+            ),
+            2.0,
+        );
+        sink.flush(dir.path());
+
+        let chip = daily_chip(&CostConfig::default(), Some(dir.path()), cwd, true).unwrap();
+        assert!(chip.contains("repo"), "got: {chip}");
+        assert!(chip.contains("$2"), "got: {chip}");
+    }
+
+    // Mirrors `daily_chip_appends_the_repo_segment_when_analytics_has_data`
+    // above: it needs `Sink`'s and `today_repo_cost`'s *real* behavior to
+    // produce an actual `Some(0.0)` from a real recorded row (an unpriced
+    // model, cost 0.0 — see `store.rs`'s
+    // `today_repo_cost_a_real_zero_cost_row_is_some_zero_not_none`), then
+    // checks that `daily_chip`'s `.filter(|cost| *cost > 0.0)` still hides
+    // the segment for that real zero, not just for a `None`.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn daily_chip_omits_the_repo_segment_for_a_real_zero_cost_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let cwd = repo.path().to_str().unwrap();
+        let today = today_utc_date(now_unix_secs());
+        cost_cache::write_cache(
+            dir.path(),
+            &cost_cache::CachePayload {
+                date: today.clone(),
+                total_usd: 4.2,
+                by_model: Vec::new(),
+                ..cost_cache::CachePayload::default()
+            },
+        )
+        .unwrap();
+
+        let mut sink = crate::analytics::Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(
+            &ParsedRecord::for_test(&today, "claude-future-model-9", cwd, Usage::default()),
+            0.0,
+        );
+        sink.flush(dir.path());
+
+        let chip = daily_chip(&CostConfig::default(), Some(dir.path()), cwd, true).unwrap();
+        assert!(!chip.contains("repo"), "got: {chip}");
+    }
+
+    #[test]
+    fn daily_chip_omits_the_repo_segment_when_analytics_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = today_utc_date(now_unix_secs());
+        cost_cache::write_cache(
+            dir.path(),
+            &cost_cache::CachePayload {
+                date: today,
+                total_usd: 4.2,
+                by_model: Vec::new(),
+                ..cost_cache::CachePayload::default()
+            },
+        )
+        .unwrap();
+
+        // `analytics_enabled = false` here means the repo segment must be
+        // absent even if a store happens to exist on disk.
+        let chip = daily_chip(&CostConfig::default(), Some(dir.path()), cwd, false).unwrap();
+        assert!(!chip.contains("repo"), "got: {chip}");
+    }
+
+    #[test]
     fn daily_chip_disabled_returns_none() {
         let cfg = CostConfig {
             show_daily: false,
             ..CostConfig::default()
         };
-        assert!(daily_chip(&cfg, Some(Path::new("/tmp"))).is_none());
+        assert!(daily_chip(
+            &cfg,
+            Some(Path::new("/tmp")),
+            "/tmp/does-not-matter-for-this-test",
+            false
+        )
+        .is_none());
     }
 
     #[test]
@@ -1321,18 +1485,36 @@ mod tests {
             ttl_seconds: 0,
             ..CostConfig::default()
         };
-        assert!(daily_chip(&cfg, Some(Path::new("/tmp"))).is_none());
+        assert!(daily_chip(
+            &cfg,
+            Some(Path::new("/tmp")),
+            "/tmp/does-not-matter-for-this-test",
+            false
+        )
+        .is_none());
     }
 
     #[test]
     fn daily_chip_no_data_dir_returns_none() {
-        assert!(daily_chip(&CostConfig::default(), None).is_none());
+        assert!(daily_chip(
+            &CostConfig::default(),
+            None,
+            "/tmp/does-not-matter-for-this-test",
+            false
+        )
+        .is_none());
     }
 
     #[test]
     fn daily_chip_no_cache_yet_returns_none() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(daily_chip(&CostConfig::default(), Some(dir.path())).is_none());
+        assert!(daily_chip(
+            &CostConfig::default(),
+            Some(dir.path()),
+            "/tmp/does-not-matter-for-this-test",
+            false
+        )
+        .is_none());
     }
 
     #[test]
@@ -1346,7 +1528,13 @@ mod tests {
         };
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
-        let chip = daily_chip(&CostConfig::default(), Some(dir.path())).unwrap();
+        let chip = daily_chip(
+            &CostConfig::default(),
+            Some(dir.path()),
+            "/tmp/does-not-matter-for-this-test",
+            false,
+        )
+        .unwrap();
         assert!(chip.contains("$4.20"));
         assert!(chip.contains("Sonnet"));
     }
@@ -1362,7 +1550,13 @@ mod tests {
         };
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
-        assert!(daily_chip(&CostConfig::default(), Some(dir.path())).is_none());
+        assert!(daily_chip(
+            &CostConfig::default(),
+            Some(dir.path()),
+            "/tmp/does-not-matter-for-this-test",
+            false
+        )
+        .is_none());
     }
 
     #[test]
@@ -1376,7 +1570,12 @@ mod tests {
         };
         cost_cache::write_cache(dir.path(), &payload).unwrap();
 
-        daily_chip(&CostConfig::default(), Some(dir.path()));
+        daily_chip(
+            &CostConfig::default(),
+            Some(dir.path()),
+            "/tmp/does-not-matter-for-this-test",
+            false,
+        );
 
         // A refresh must fire right away rather than waiting out the TTL —
         // `spawn_refresh` leaves a lock file behind as it starts one.

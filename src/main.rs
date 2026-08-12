@@ -270,7 +270,9 @@ fn main() {
         session_cost,
         branch.as_deref(),
     );
-    if let Some(daily) = cost::daily_chip(&cfg.cost, data_dir.as_deref()) {
+    if let Some(daily) =
+        cost::daily_chip(&cfg.cost, data_dir.as_deref(), &cwd, cfg.analytics.enabled)
+    {
         output.push('\n');
         output.push_str(&daily);
     }

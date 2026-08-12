@@ -502,6 +502,75 @@ fn report_defaults_to_the_repo_resolved_from_cwd() {
 
 #[cfg(feature = "analytics")]
 #[test]
+fn daily_chip_shows_a_repo_segment_for_the_current_repo() {
+    let (mut cmd, home) = isolated();
+    write_analytics_config(home.path());
+
+    let repo = tempfile::tempdir().unwrap();
+    write_git_remote(repo.path(), "https://github.com/kerryhatcher/ferrisbar.git");
+
+    let claude_config = tempfile::tempdir().unwrap();
+    let transcripts = claude_config.path().join("projects").join("proj");
+    fs::create_dir_all(&transcripts).unwrap();
+    let today = today_utc_date();
+    fs::write(
+        transcripts.join("a.jsonl"),
+        format!(
+            r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+            escape_for_string_literal(repo.path())
+        ),
+    )
+    .unwrap();
+
+    // Real ingestion: same as the existing report_reflects_usage_ingested
+    // test, populating both cost-cache.json and the analytics store.
+    cmd.env("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())
+        .env_remove("FERRISBAR_COST_TTL_SECONDS")
+        .args(["--internal-refresh-daily-cost"]);
+    let refresh_output = cmd
+        .output()
+        .expect("failed to run --internal-refresh-daily-cost");
+    assert!(refresh_output.status.success());
+
+    // A normal render (no subcommand), sharing the same home so it reads
+    // the cache/store the refresh above just wrote. `FERRISBAR_COST_TTL_SECONDS`
+    // must not stay at isolated()'s default of "0" here — that value means
+    // "disable the daily line entirely," which would hide the very segment
+    // this test is checking for, not just skip a background refresh.
+    let mut render_cmd = command_with_home(home.path());
+    render_cmd
+        .env("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())
+        .env_remove("FERRISBAR_COST_TTL_SECONDS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let payload = format!(
+        r#"{{"model":{{"display_name":"Sonnet"}},"workspace":{{"current_dir":"{}"}},"context_window":{{"remaining_percentage":100.0,"total_tokens":1000000}}}}"#,
+        escape_for_string_literal(repo.path())
+    );
+    let mut child = render_cmd.spawn().expect("failed to spawn ferrisbar");
+    child
+        .stdin
+        .take()
+        .expect("child stdin handle")
+        .write_all(payload.as_bytes())
+        .expect("failed to write to child stdin");
+    let output = child.wait_with_output().expect("failed to wait on child");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let daily_chip_line = stdout.lines().nth(1).unwrap_or("");
+    assert!(
+        daily_chip_line.contains("repo"),
+        "expected a repo segment on the daily chip line: {stdout}"
+    );
+    assert!(
+        daily_chip_line.contains('$'),
+        "expected a dollar amount on the daily chip line: {stdout}"
+    );
+}
+
+#[cfg(feature = "analytics")]
+#[test]
 fn report_with_no_data_yet_prints_an_empty_array_and_exits_zero() {
     let output = run_command(&["report", "--all"], &[], None);
     assert!(output.status.success());
