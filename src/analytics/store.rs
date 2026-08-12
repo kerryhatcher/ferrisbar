@@ -6,7 +6,7 @@
 
 use crate::cost::ParsedRecord;
 use crate::repo_identity::{self, RepoIdentity};
-use redb::{ReadableTable, TableDefinition};
+use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -175,17 +175,29 @@ pub fn today_repo_cost(enabled: bool, data_dir: &Path, repo_key: &str) -> Option
     let Ok(table) = txn.open_table(TABLE) else {
         return None;
     };
-    let Ok(iter) = table.iter() else {
+    // Keys are `date\0repo_key\0model`, and redb's `&str` keys sort in
+    // plain lexicographic byte order, so every row for `today` — any repo,
+    // any model — falls in `"{today}\0" .. "{today}\u{1}"`: `\0` (0x00) is
+    // the smallest possible byte, so "{today}\0" followed by *anything*
+    // still sorts below "{today}\u{1}" (0x01) at that same position, and
+    // `today` itself is a fixed-width `YYYY-MM-DD` string, so it is never a
+    // byte-prefix of a different date. Bounding the scan this way touches
+    // only today's rows instead of the table's entire un-pruned history, so
+    // the date half of the old per-row filter below is no longer needed —
+    // only the repo check remains.
+    let range_start = format!("{today}\0");
+    let range_end = format!("{today}\u{1}");
+    let Ok(iter) = table.range(range_start.as_str()..range_end.as_str()) else {
         return None;
     };
     let mut total = 0.0_f64;
     let mut found = false;
     for entry in iter {
         let Ok((key, value)) = entry else { continue };
-        let Some((date, key_repo, _model)) = decode_key(key.value()) else {
+        let Some((_date, key_repo, _model)) = decode_key(key.value()) else {
             continue;
         };
-        if date != today || key_repo != repo_key {
+        if key_repo != repo_key {
             continue;
         }
         let Ok(row) = serde_json::from_slice::<Row>(value.value()) else {
@@ -423,6 +435,50 @@ mod tests {
             today_repo_cost(true, dir.path(), &other_key),
             None,
             "a repo with no rows for today must return None, not 0.0"
+        );
+    }
+
+    // Guards the range-scan's bounds specifically: seeds rows for dates
+    // that sort both lexicographically before ("2020-01-01") and after
+    // ("9999-12-31") today, plus a second repo on today's own date, all in
+    // the same store, and confirms `today_repo_cost` sums only the rows
+    // that are actually today's date *and* the target repo. An off-by-one
+    // in either bound of `"{today}\0" .. "{today}\u{1}"` would pull in one
+    // of the out-of-range dates here; a bound that's too narrow would drop
+    // today's own row.
+    #[test]
+    fn today_repo_cost_range_scan_excludes_other_dates_and_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let other_repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let other_cwd = other_repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+        let before_today = "2020-01-01".to_string(); // sorts before any real "today"
+        let after_today = "9999-12-31".to_string(); // sorts after any real "today"
+
+        // Sink only accepts records dated "today" or "yesterday" relative to
+        // its own construction, so each out-of-range date needs its own
+        // `Sink` constructed with that date as its "today" to get a real row
+        // written for it.
+        let mut sink_before = Sink::new(true, before_today.clone(), "1970-01-01".to_string());
+        sink_before.record(&usage_record(&before_today, "claude-sonnet-5", cwd), 5.0);
+        sink_before.flush(dir.path());
+
+        let mut sink_after = Sink::new(true, after_today.clone(), "1970-01-01".to_string());
+        sink_after.record(&usage_record(&after_today, "claude-sonnet-5", cwd), 7.0);
+        sink_after.flush(dir.path());
+
+        let mut sink_today = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink_today.record(&usage_record(&today, "claude-sonnet-5", cwd), 3.0);
+        sink_today.record(&usage_record(&today, "claude-sonnet-5", other_cwd), 100.0);
+        sink_today.flush(dir.path());
+
+        let repo_key = repo_identity::resolve(cwd).key;
+        let total = today_repo_cost(true, dir.path(), &repo_key);
+        assert!(
+            (total.unwrap() - 3.0).abs() < 1e-9,
+            "expected only today's $3.00 row for this repo, got {total:?}"
         );
     }
 
