@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/kerryhatcher/ferrisbar/compare/v0.4.0...v0.5.0) (2026-08-12)
+
+
+### Features
+
+* append a repo-cost segment to the daily chip ([463f99c](https://github.com/kerryhatcher/ferrisbar/commit/463f99c0929f51f1ce48d29e2e08951236233d92))
+
 ## [0.4.0](https://github.com/kerryhatcher/ferrisbar/compare/v0.3.0...v0.4.0) (2026-08-12)
 
 
