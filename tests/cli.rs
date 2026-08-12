@@ -297,7 +297,31 @@ fn drains_large_stdin_payload() {
 }
 
 fn run_command(args: &[&str], envs: &[(&str, &str)], cwd: Option<&Path>) -> std::process::Output {
-    let (mut cmd, _home) = isolated();
+    let home = tempfile::tempdir().unwrap();
+    run_command_with_home(home.path(), args, envs, cwd)
+}
+
+/// Like `run_command`, but rooted at a caller-supplied `home` instead of a
+/// fresh one — for tests that need the spawned process's `HOME`/`APPDATA`/
+/// `LOCALAPPDATA` to all resolve into a home directory another process (or
+/// an earlier step in this same test) already wrote state into.
+///
+/// This matters beyond convenience: `command_with_home` points
+/// `HOME`/`APPDATA`/`LOCALAPPDATA` all at the same path, but `run_command`
+/// only ever applied whatever the caller passed via `envs` on top of its own
+/// fresh `isolated()` home. A caller that only overrode `HOME` (the pattern
+/// this replaces) left `APPDATA`/`LOCALAPPDATA` pointed at that unrelated
+/// fresh tempdir — invisible on Unix, where `paths.rs`'s `base_vars()` never
+/// consults them, but on Windows it resolves the data dir from `APPDATA`/
+/// `LOCALAPPDATA` instead, so the spawned process would open a different,
+/// empty data dir than the one the test actually populated.
+fn run_command_with_home(
+    home: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    cwd: Option<&Path>,
+) -> std::process::Output {
+    let mut cmd = command_with_home(home);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -355,7 +379,7 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
     assert!(!output.stderr.is_empty());
 }
 
-// The four `#[cfg(feature = "analytics")]` tests below exercise the
+// The three `#[cfg(feature = "analytics")]` tests below exercise the
 // `report` subcommand end to end: a fake git repo with an `origin` remote,
 // a fake Claude-Code transcript whose `cwd` points into that repo, real
 // ingestion via `--internal-refresh-daily-cost` against the real redb
@@ -364,7 +388,7 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
 // used, so these only run meaningfully — and only compile in the ingestion
 // path they need — under `cargo test --features analytics` (see the
 // `just test-analytics` recipe). Under a plain `cargo test` this whole
-// block is compiled out by `#[cfg]` and skipped, not failed; the fifth
+// block is compiled out by `#[cfg]` and skipped, not failed; the fourth
 // test below, `report_without_the_analytics_feature_exits_nonzero`, is
 // gated the opposite way (`#[cfg(not(feature = "analytics"))]`) because it
 // checks the *other* build's behavior (that `report` exits nonzero when
@@ -418,12 +442,10 @@ fn report_reflects_usage_ingested_by_the_background_refresh() {
         .expect("failed to run --internal-refresh-daily-cost");
     assert!(refresh_output.status.success());
 
-    let report_output = run_command(
+    let report_output = run_command_with_home(
+        home.path(),
         &["report", "--all", "--format", "json"],
-        &[
-            ("HOME", home.path().to_str().unwrap()),
-            ("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap()),
-        ],
+        &[("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())],
         None,
     );
     assert!(report_output.status.success());
@@ -464,12 +486,10 @@ fn report_defaults_to_the_repo_resolved_from_cwd() {
     assert!(cmd.output().unwrap().status.success());
 
     // Run `report` with cwd set to the repo itself — no `--repo` flag.
-    let report_output = run_command(
+    let report_output = run_command_with_home(
+        home.path(),
         &["report"],
-        &[
-            ("HOME", home.path().to_str().unwrap()),
-            ("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap()),
-        ],
+        &[("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())],
         Some(repo.path()),
     );
     assert!(report_output.status.success());
@@ -488,7 +508,7 @@ fn report_with_no_data_yet_prints_an_empty_array_and_exits_zero() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
 }
 
-// Mirror image of the four `#[cfg(feature = "analytics")]` tests above:
+// Mirror image of the three `#[cfg(feature = "analytics")]` tests above:
 // this one checks the *other* build's behavior (that `report` exits
 // nonzero when the feature is off), so it's gated the opposite way.
 #[cfg(not(feature = "analytics"))]

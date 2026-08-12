@@ -26,10 +26,19 @@ pub struct Row {
 impl Row {
     fn accumulate(&mut self, rec: &ParsedRecord, cost: f64) {
         self.cost_usd += cost;
-        self.input_tokens += rec.usage.input_tokens;
-        self.output_tokens += rec.usage.output_tokens;
-        self.cache_creation_tokens += rec.usage.cache_creation_tokens;
-        self.cache_read_tokens += rec.usage.cache_read_tokens;
+        // Saturating, not `+=`: token counts are parsed unclamped from
+        // transcript JSON (untrusted input), so a plain `+=` risks an
+        // overflow panic in a debug build if two records land near
+        // `u64::MAX` — the one integer-overflow-panic risk in an otherwise
+        // all-`f64` cost codebase. Never panic on input.
+        self.input_tokens = self.input_tokens.saturating_add(rec.usage.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(rec.usage.output_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(rec.usage.cache_creation_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(rec.usage.cache_read_tokens);
     }
 }
 
