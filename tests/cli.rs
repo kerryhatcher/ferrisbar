@@ -355,6 +355,150 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
     assert!(!output.stderr.is_empty());
 }
 
+// The four `#[cfg(feature = "analytics")]` tests below exercise the
+// `report` subcommand end to end: a fake git repo with an `origin` remote,
+// a fake Claude-Code transcript whose `cwd` points into that repo, real
+// ingestion via `--internal-refresh-daily-cost` against the real redb
+// store, then `ferrisbar report` reading it back. `env!("CARGO_BIN_EXE_ferrisbar")`
+// is built with whatever features the surrounding `cargo test` invocation
+// used, so these only run meaningfully — and only compile in the ingestion
+// path they need — under `cargo test --features analytics` (see the
+// `just test-analytics` recipe). Under a plain `cargo test` this whole
+// block is compiled out by `#[cfg]` and skipped, not failed; the fifth
+// test below, `report_without_the_analytics_feature_exits_nonzero`, is
+// deliberately not gated because it checks the *other* build's behavior
+// (that `report` exits nonzero when the feature is off).
+
+#[cfg(feature = "analytics")]
+fn write_git_remote(repo_root: &Path, url: &str) {
+    let git_dir = repo_root.join(".git");
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::write(
+        git_dir.join("config"),
+        format!("[remote \"origin\"]\n\turl = {url}\n"),
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "analytics")]
+fn write_analytics_config(home: &Path) {
+    let dir = config_dir(home);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("config.toml"), "[analytics]\nenabled = true\n").unwrap();
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn report_reflects_usage_ingested_by_the_background_refresh() {
+    let (mut cmd, home) = isolated();
+    write_analytics_config(home.path());
+
+    let repo = tempfile::tempdir().unwrap();
+    write_git_remote(repo.path(), "https://github.com/kerryhatcher/ferrisbar.git");
+
+    let claude_config = tempfile::tempdir().unwrap();
+    let transcripts = claude_config.path().join("projects").join("proj");
+    fs::create_dir_all(&transcripts).unwrap();
+    let today = today_utc_date();
+    fs::write(
+        transcripts.join("a.jsonl"),
+        format!(
+            r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+            escape_for_string_literal(repo.path())
+        ),
+    )
+    .unwrap();
+
+    cmd.env("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())
+        .env_remove("FERRISBAR_COST_TTL_SECONDS") // this test needs the real ingestion path, not the disabled default
+        .args(["--internal-refresh-daily-cost"]);
+    let refresh_output = cmd
+        .output()
+        .expect("failed to run --internal-refresh-daily-cost");
+    assert!(refresh_output.status.success());
+
+    let report_output = run_command(
+        &["report", "--all", "--format", "json"],
+        &[
+            ("HOME", home.path().to_str().unwrap()),
+            ("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap()),
+        ],
+        None,
+    );
+    assert!(report_output.status.success());
+    let stdout = String::from_utf8_lossy(&report_output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = parsed.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["repo"], "remote:github.com/kerryhatcher/ferrisbar");
+    // sonnet-5 input rate is $2/Mtok; 1M input tokens = $2.
+    assert!((rows[0]["cost_usd"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn report_defaults_to_the_repo_resolved_from_cwd() {
+    let (mut cmd, home) = isolated();
+    write_analytics_config(home.path());
+
+    let repo = tempfile::tempdir().unwrap();
+    write_git_remote(repo.path(), "https://github.com/someone/example.git");
+
+    let claude_config = tempfile::tempdir().unwrap();
+    let transcripts = claude_config.path().join("projects").join("proj");
+    fs::create_dir_all(&transcripts).unwrap();
+    let today = today_utc_date();
+    fs::write(
+        transcripts.join("a.jsonl"),
+        format!(
+            r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+            escape_for_string_literal(repo.path())
+        ),
+    )
+    .unwrap();
+
+    cmd.env("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())
+        .env_remove("FERRISBAR_COST_TTL_SECONDS")
+        .args(["--internal-refresh-daily-cost"]);
+    assert!(cmd.output().unwrap().status.success());
+
+    // Run `report` with cwd set to the repo itself — no `--repo` flag.
+    let report_output = run_command(
+        &["report"],
+        &[
+            ("HOME", home.path().to_str().unwrap()),
+            ("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap()),
+        ],
+        Some(repo.path()),
+    );
+    assert!(report_output.status.success());
+    let stdout = String::from_utf8_lossy(&report_output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = parsed.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["repo"], "remote:github.com/someone/example");
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn report_with_no_data_yet_prints_an_empty_array_and_exits_zero() {
+    let output = run_command(&["report", "--all"], &[], None);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
+}
+
+#[test]
+fn report_without_the_analytics_feature_exits_nonzero() {
+    // Meaningful only in a build without `analytics`; under
+    // `--features analytics` this assertion would (correctly) fail, so
+    // this test is deliberately not `#[cfg(feature = "analytics")]` —
+    // it documents and checks the *other* build's behavior. Run this
+    // specific test only via `just test` (default build), not
+    // `just test-analytics`.
+    let output = run_command(&["report"], &[], None);
+    assert!(!output.status.success());
+}
+
 #[test]
 fn setup_honors_claude_config_dir_over_home() {
     let config_dir = tempfile::tempdir().unwrap();
