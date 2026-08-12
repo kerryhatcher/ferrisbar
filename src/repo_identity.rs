@@ -2,7 +2,13 @@
 //! analytics indexing: a normalized `origin` remote when one is
 //! configured, otherwise the repository's own root folder name. See
 //! docs/superpowers/specs/2026-08-11-repo-cost-analytics-design.md.
-
+//!
+//! This module itself is not feature-gated (it's plain, dependency-free
+//! Rust), but its only real callers — `analytics::store::Sink::record` and
+//! `main.rs`'s `run_report` — are both behind `#[cfg(feature = "analytics")]`.
+//! In a default build `resolve` and everything it calls are genuinely
+//! unreachable outside tests, hence the module-wide allow below rather than
+//! one scattered across every function.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
