@@ -25,11 +25,9 @@ pub use report::{parse_args as parse_report_args, render};
 #[cfg(feature = "analytics")]
 pub use store::Sink;
 
-// Only called from `store`'s own tests today. `cost.rs`'s `daily_chip` will
-// call this unconditionally starting in Task 2, mirroring `Sink`'s rationale
-// above — until then this re-export is unused-but-harmless outside tests.
+// `cost.rs`'s `daily_chip` calls this unconditionally (Task 2), mirroring
+// `Sink`'s rationale above, so it's a real, always-live re-export.
 #[cfg(feature = "analytics")]
-#[allow(unused_imports)]
 pub use store::today_repo_cost;
 
 // The zero-cost no-op used in place of `store::Sink` when the `analytics`
@@ -63,15 +61,14 @@ impl Sink {
 }
 
 // The zero-cost no-op used in place of `store::today_repo_cost` when the
-// `analytics` feature is off. `cost.rs`'s `daily_chip` will call it
-// unconditionally starting in Task 2; until then it's unused-but-harmless
-// in a plain build too.
+// `analytics` feature is off. `cost.rs`'s `daily_chip` calls it
+// unconditionally (Task 2), so it is not dead code in a plain build either.
 // Not `const`, despite doing nothing but returning `None`: this stub's
 // signature must match the real (`feature = "analytics"`) `today_repo_cost`
 // exactly, same rationale as `Sink::record`/`flush` above, and the real one
 // can't be `const` (it opens a redb database).
 #[cfg(not(feature = "analytics"))]
-#[allow(dead_code, clippy::missing_const_for_fn)]
+#[allow(clippy::missing_const_for_fn)]
 pub fn today_repo_cost(
     _enabled: bool,
     _data_dir: &std::path::Path,

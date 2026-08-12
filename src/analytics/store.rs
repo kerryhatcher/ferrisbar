@@ -157,10 +157,8 @@ impl Sink {
 /// this only ever reads whatever the last background refresh already
 /// committed.
 ///
-/// Only called from this module's own tests today; `cost.rs`'s `daily_chip`
-/// gets a real call site starting in Task 2, mirroring `Sink`'s own history
-/// in this file.
-#[allow(dead_code)]
+/// `cost.rs`'s `daily_chip` calls this (Task 2), mirroring `Sink`'s own
+/// history in this file.
 pub fn today_repo_cost(enabled: bool, data_dir: &Path, repo_key: &str) -> Option<f64> {
     if !enabled {
         return None;
