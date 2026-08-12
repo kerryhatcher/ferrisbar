@@ -194,15 +194,13 @@ pub fn today_repo_cost(enabled: bool, data_dir: &Path, repo_key: &str) -> Option
     let mut total = 0.0_f64;
     let mut found = false;
     for entry in iter {
-        let Ok((key, value)) = entry else { continue };
-        let Some((_date, key_repo, _model)) = decode_key(key.value()) else {
-            continue;
-        };
+        let Ok((key, value)) = entry else { return None };
+        let (_date, key_repo, _model) = decode_key(key.value())?;
         if key_repo != repo_key {
             continue;
         }
         let Ok(row) = serde_json::from_slice::<Row>(value.value()) else {
-            continue;
+            return None;
         };
         total += row.cost_usd;
         found = true;
@@ -519,5 +517,35 @@ mod tests {
 
         let repo_key = repo_identity::resolve(cwd).key;
         assert_eq!(today_repo_cost(true, dir.path(), &repo_key), Some(0.0));
+    }
+
+    #[test]
+    fn today_repo_cost_returns_none_when_a_matching_row_is_malformed() {
+        // One valid row plus one malformed row, both for today's date and
+        // the same repo: a partial total from just the valid row would be
+        // as misleading as it is silent, so this must be `None`, not a sum
+        // that quietly drops the bad row.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let cwd = repo.path().to_str().unwrap();
+        let today = crate::cost::today_utc_date(crate::cost::now_unix_secs());
+        let repo_key = repo_identity::resolve(cwd).key;
+
+        let mut sink = Sink::new(true, today.clone(), "1970-01-01".to_string());
+        sink.record(&usage_record(&today, "claude-sonnet-5", cwd), 2.0);
+        sink.flush(dir.path());
+
+        // `Sink`/`flush` only ever write valid `Row` JSON, so the malformed
+        // row has to be inserted directly, bypassing that path.
+        let db = redb::Database::create(db_path(dir.path())).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(TABLE).unwrap();
+            let key = encode_key(&today, &repo_key, "claude-opus-5");
+            table.insert(key.as_str(), b"not json".as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+
+        assert_eq!(today_repo_cost(true, dir.path(), &repo_key), None);
     }
 }

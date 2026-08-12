@@ -25,8 +25,9 @@ pub use report::{parse_args as parse_report_args, render};
 #[cfg(feature = "analytics")]
 pub use store::Sink;
 
-// `cost.rs`'s `daily_chip` calls this unconditionally (Task 2), mirroring
-// `Sink`'s rationale above, so it's a real, always-live re-export.
+// `cost.rs`'s `daily_chip` calls this when `analytics_enabled` is true
+// (Task 2), with no `#[cfg(feature = "analytics")]` of its own at the call
+// site, so it's a real, always-live re-export.
 #[cfg(feature = "analytics")]
 pub use store::today_repo_cost;
 
@@ -61,8 +62,10 @@ impl Sink {
 }
 
 // The zero-cost no-op used in place of `store::today_repo_cost` when the
-// `analytics` feature is off. `cost.rs`'s `daily_chip` calls it
-// unconditionally (Task 2), so it is not dead code in a plain build either.
+// `analytics` feature is off. `cost.rs`'s `daily_chip` still calls it by
+// name (Task 2) — even though a `cfg!(feature = "analytics")` check there
+// means that call is never actually reached in a plain build — so it is
+// not dead code in a plain build either.
 // Not `const`, despite doing nothing but returning `None`: this stub's
 // signature must match the real (`feature = "analytics"`) `today_repo_cost`
 // exactly, same rationale as `Sink::record`/`flush` above, and the real one

@@ -5,8 +5,9 @@
 //!
 //! This module itself is not feature-gated (it's plain, dependency-free
 //! Rust). `resolve` — and everything it calls — is no longer unreachable
-//! in a default build: `cost::daily_chip` now calls it unconditionally to
-//! key the repo-cost segment, alongside its other callers,
+//! in a default build: `cost::daily_chip` now calls it too, when
+//! `analytics_enabled` is true, to key the repo-cost segment, alongside
+//! its other callers,
 //! `analytics::store::Sink::record` and `main.rs`'s `run_report`, which
 //! are behind `#[cfg(feature = "analytics")]`. `daily_chip` only reads
 //! `RepoIdentity::key`, not `display` — but `display` stays non-dead in a

@@ -13,7 +13,7 @@ maintains.
 line — today's total cost across every session, everywhere, plus a
 per-model breakdown:
 
-```
+```text
 $204.10 today (Opus $135 · Sonnet $69)
 ```
 
@@ -112,7 +112,7 @@ arguments straight through; no other render-path code changes.
 
 Appended to the existing chip string, separated by `" │ "`:
 
-```
+```text
 $204.10 today (Opus $135 · Sonnet $69) │ repo $12
 ```
 

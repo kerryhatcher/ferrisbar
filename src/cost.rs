@@ -681,7 +681,7 @@ pub fn daily_chip(
         by_model: payload.by_model,
     };
     let mut chip = format_daily_chip(&daily, cfg.breakdown_min_usd);
-    if analytics_enabled {
+    if analytics_enabled && cfg!(feature = "analytics") {
         let repo_key = crate::repo_identity::resolve(cwd).key;
         let repo_cost =
             crate::analytics::today_repo_cost(true, data_dir, &repo_key).filter(|cost| *cost > 0.0);
