@@ -11,6 +11,19 @@
 #[cfg(feature = "analytics")]
 pub mod store;
 
+#[cfg(feature = "analytics")]
+mod report;
+
+// `render`/`parse_report_args`/`ReportOptions` and everything they touch in
+// `report` are unreachable from `main` until Task 8 wires this re-export
+// into the CLI's `report` subcommand, so a `--features analytics` build
+// without that wiring yet flags the re-export (and, transitively, `report`'s
+// own items) as dead. Task 7 only builds the report engine; Task 8 is what
+// makes it live.
+#[cfg(feature = "analytics")]
+#[allow(unused_imports)]
+pub use report::{parse_args as parse_report_args, render, Options as ReportOptions};
+
 // `Sink` and everything it touches in `store` are unreachable from `main`
 // until Task 6 wires this re-export into `cost.rs`'s transcript-walk hot
 // loop, so a `--features analytics` build without that wiring yet flags the
