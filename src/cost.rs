@@ -921,7 +921,13 @@ mod tests {
 
     #[test]
     fn parse_line_missing_cwd_is_none() {
-        let line = &usage_line("2026-08-10T10:00:00Z", "claude-sonnet-5", "req_1", "msg_1", 100);
+        let line = &usage_line(
+            "2026-08-10T10:00:00Z",
+            "claude-sonnet-5",
+            "req_1",
+            "msg_1",
+            100,
+        );
         let rec = parse_line(line).unwrap();
         assert_eq!(rec.cwd, None);
     }

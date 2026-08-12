@@ -96,10 +96,10 @@ fn read_origin_url(git_dir: &Path) -> Option<String> {
 /// falling back to `"unknown"` for the practically-impossible case of a
 /// root path with no final component at all.
 fn root_folder_name(git_dir: &Path) -> String {
-    git_dir
-        .parent()
-        .and_then(Path::file_name)
-        .map_or_else(|| "unknown".to_string(), |n| n.to_string_lossy().into_owned())
+    git_dir.parent().and_then(Path::file_name).map_or_else(
+        || "unknown".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// `cwd`'s own last path component, falling back to `"unknown"` the same
@@ -107,9 +107,10 @@ fn root_folder_name(git_dir: &Path) -> String {
 /// repository at all — there is no repo root to name, so `cwd` itself
 /// stands in for it.
 fn cwd_folder_name(cwd: &str) -> String {
-    Path::new(cwd)
-        .file_name()
-        .map_or_else(|| "unknown".to_string(), |n| n.to_string_lossy().into_owned())
+    Path::new(cwd).file_name().map_or_else(
+        || "unknown".to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Resolves `cwd`'s repository identity. Always returns a usable
@@ -127,7 +128,9 @@ pub fn resolve(cwd: &str) -> RepoIdentity {
     // For worktrees/submodules, resolve to the common git directory
     // so we can read the actual config and get the correct repo name.
     let common_git_dir = resolve_common_git_dir(&git_dir);
-    if let Some(origin) = read_origin_url(&common_git_dir).and_then(|raw| normalize_remote_url(&raw)) {
+    if let Some(origin) =
+        read_origin_url(&common_git_dir).and_then(|raw| normalize_remote_url(&raw))
+    {
         return RepoIdentity {
             key: format!("remote:{origin}"),
             display: origin,
@@ -169,7 +172,10 @@ mod tests {
             keys.push(resolve(dir.path().to_str().unwrap()).key);
         }
         for key in &keys[1..] {
-            assert_eq!(key, &keys[0], "all four URL forms must normalize identically");
+            assert_eq!(
+                key, &keys[0],
+                "all four URL forms must normalize identically"
+            );
         }
         assert_eq!(keys[0], "remote:github.com/kerryhatcher/ferrisbar");
     }
@@ -177,7 +183,10 @@ mod tests {
     #[test]
     fn embedded_credentials_are_stripped() {
         let dir = tempfile::tempdir().unwrap();
-        write_git_dir(dir.path(), Some("https://user:token@github.com/org/repo.git"));
+        write_git_dir(
+            dir.path(),
+            Some("https://user:token@github.com/org/repo.git"),
+        );
         let identity = resolve(dir.path().to_str().unwrap());
         assert_eq!(identity.key, "remote:github.com/org/repo");
     }
