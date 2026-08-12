@@ -291,6 +291,9 @@ show_daily   = true
 show_weekly  = true
 show_monthly = true
 show_block5h = true
+
+[analytics]
+enabled      = false
 ```
 
 A relative `log.path` resolves against the data directory, not the
@@ -332,6 +335,28 @@ window has its own `show_*` toggle; the daily/weekly/monthly/block5h bars
 share the daily-cost cache above, so they're subject to the same `ttl_seconds`
 and appear only once that cache has a same-day value to show. `bar_width` sets
 the width of each mini bar, independent of `display.bar_width`.
+
+`[analytics]` is **off by default** and, unlike every other config block,
+has no effect at all unless ferrisbar was built with the optional
+`analytics` Cargo feature (`cargo build --features analytics`) — a
+pure-Rust embedded datastore is not part of the default build. When both
+the feature and `enabled = true` are set, the same background refresh
+that computes the daily-cost chip also resolves each transcript record's
+git repository (its `origin` remote, normalized, or the repo's own
+folder name when there is no remote) and records that day's cost and
+token totals per repo and model to `<data dir>/analytics.redb`. The
+`ferrisbar report` subcommand reads that store:
+
+```bash
+ferrisbar report                              # this repo, full history, JSON
+ferrisbar report --repo remote:github.com/org/name
+ferrisbar report --from 2026-08-01 --to 2026-08-31 --format csv
+ferrisbar report --all                        # one summary row per tracked repo
+```
+
+Recording only ever looks at the current and previous UTC day — there is
+no backfill of history from before the feature was enabled, and no
+cross-machine merging of separate `analytics.redb` files.
 
 ### The log
 

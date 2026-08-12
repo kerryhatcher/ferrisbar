@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// repository; a file (worktrees, submodules) holds a `gitdir: <path>`
 /// pointer to the real one, which may itself be relative to the file's own
 /// directory.
-fn find_git_dir(start: &Path) -> Option<PathBuf> {
+pub fn find_git_dir(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let candidate = d.join(".git");

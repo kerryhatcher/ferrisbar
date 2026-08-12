@@ -26,6 +26,7 @@ jobs:
         with:
           tool: just
       - run: just test
+      - run: just test-analytics
 
   lint:
     name: lint
@@ -42,6 +43,7 @@ jobs:
           tool: just
       - run: just fmt
       - run: just lint
+      - run: just lint-analytics
 
   # Pins the exact toolchain from Cargo.toml's rust-version and runs the
   # test suite under it — verifies the declared MSRV, doesn't rediscover it
@@ -59,6 +61,11 @@ jobs:
         with:
           tool: just
       - run: just test
+      # src/analytics/* and the redb dependency are only compiled with this
+      # feature on, so the plain `just test` above never touches them —
+      # this is the only place either gets built under the pinned MSRV
+      # toolchain.
+      - run: cargo check --features analytics
 
   security:
     name: security
@@ -74,6 +81,7 @@ jobs:
           tool: just,cargo-audit,cargo-deny,cargo-geiger
       - run: just audit
       - run: just deny
+      - run: just deny-analytics
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs

@@ -98,11 +98,11 @@ fn resolve_model<'a>(model: &str, pricing: &'a PricingTable) -> Option<&'a Model
 // elsewhere in this module.
 #[allow(clippy::struct_field_names)]
 #[derive(Default, Clone, Copy)]
-struct Usage {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_creation_tokens: u64,
-    cache_read_tokens: u64,
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
 }
 
 impl Usage {
@@ -184,18 +184,42 @@ struct RecordRaw {
     timestamp: Option<String>,
     #[serde(rename = "requestId", alias = "request_id")]
     request_id: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
-struct ParsedRecord {
-    usage: Usage,
-    model: String,
-    date: String,
+#[allow(dead_code)]
+// ParsedRecord is pub and fields are pub because Task 5's Sink module will consume them.
+pub struct ParsedRecord {
+    pub usage: Usage,
+    pub model: String,
+    pub date: String,
     /// `None` when `timestamp` doesn't parse as the expected
     /// `YYYY-MM-DDTHH:MM:SS...` shape — such a record still counts toward
     /// `date`-keyed daily aggregation but is excluded from the rolling/
     /// calendar budget windows, which need a real instant to compare against.
-    timestamp_unix: Option<i64>,
-    dedup_key: Option<String>,
+    pub timestamp_unix: Option<i64>,
+    pub dedup_key: Option<String>,
+    pub cwd: Option<String>,
+}
+
+#[cfg(any(test, feature = "analytics"))]
+impl ParsedRecord {
+    // Only called from tests today. It also compiles into a plain
+    // `--features analytics` build (no `cfg(test)`) for `analytics::store`'s
+    // own tests to use, where it's unused-but-harmless until Task 6 gives
+    // `analytics::Sink` a real caller in this module's hot loop.
+    #[allow(dead_code)]
+    pub fn for_test(date: &str, model: &str, cwd: &str, usage: Usage) -> Self {
+        Self {
+            usage,
+            model: model.to_string(),
+            date: date.to_string(),
+            timestamp_unix: None,
+            dedup_key: None,
+            cwd: Some(cwd.to_string()),
+        }
+    }
 }
 
 /// `None` for anything that is not a usage-bearing assistant message —
@@ -237,6 +261,7 @@ fn parse_line(line: &str) -> Option<ParsedRecord> {
         timestamp_unix: parse_iso8601_utc(&timestamp),
         date,
         dedup_key,
+        cwd: record.cwd,
     })
 }
 
@@ -416,7 +441,12 @@ pub struct WindowTotals {
 /// still keys the daily total by date string (matching the on-disk cache's
 /// existing staleness check); the other three windows compare directly
 /// against `now`-derived boundaries.
-fn aggregate_windows(transcripts_root: &Path, now: i64, today: &str) -> WindowTotals {
+fn aggregate_windows(
+    transcripts_root: &Path,
+    now: i64,
+    today: &str,
+    analytics: &mut crate::analytics::Sink,
+) -> WindowTotals {
     let pricing = load_pricing();
     let week_start = start_of_week(now);
     let month_start = start_of_month(now);
@@ -468,6 +498,19 @@ fn aggregate_windows(transcripts_root: &Path, now: i64, today: &str) -> WindowTo
                 }
             }
             let cost = cost_for(&rec.usage, &rec.model, &pricing);
+            // Every record reaching this point already has non-empty usage
+            // (parse_line's earlier `usage.is_empty()` check), so `cost` can
+            // only be exactly zero here when `resolve_model` can't match an
+            // unrecognized/future model — never a genuinely zero-usage
+            // record. `analytics.record` must see these anyway: it's the
+            // only place raw token counts for an unpriced model are
+            // captured, and this feature has no backfill, so a record
+            // skipped here is lost forever even though re-pricing it later
+            // (once the model is in `pricing.json`) is the whole point of
+            // storing tokens instead of just cost. The daily/weekly/monthly/
+            // block5h bucketing below still only counts genuinely
+            // cost-bearing records, so that behavior is unchanged.
+            analytics.record(&rec, cost);
             if cost <= 0.0 {
                 continue;
             }
@@ -545,10 +588,13 @@ fn format_daily_chip(daily: &DailyTotal, min_usd: f64) -> String {
 /// construction — a write failure is swallowed by `cost_cache::write_cache`,
 /// and the lock is always released so a stuck refresh cannot wedge every
 /// later render out of ever retrying.
-pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path) {
+pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path, analytics_enabled: bool) {
     let now = now_unix_secs();
     let today = today_utc_date(now);
-    let windows = aggregate_windows(transcripts_root, now, &today);
+    let yesterday = today_utc_date(now - 86_400);
+    let mut analytics = crate::analytics::Sink::new(analytics_enabled, today.clone(), yesterday);
+    let windows = aggregate_windows(transcripts_root, now, &today, &mut analytics);
+    analytics.flush(data_dir);
     let payload = cost_cache::CachePayload {
         date: today,
         total_usd: windows.daily.total_usd,
@@ -879,6 +925,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_line_captures_the_top_level_cwd_field() {
+        let line = r#"{"cwd":"/Users/dev/myrepo","timestamp":"2026-08-10T10:00:00Z","requestId":"req_1","message":{"model":"claude-sonnet-5","id":"msg_1","usage":{"input_tokens":100}}}"#;
+        let rec = parse_line(line).unwrap();
+        assert_eq!(rec.cwd, Some("/Users/dev/myrepo".to_string()));
+    }
+
+    #[test]
+    fn parse_line_missing_cwd_is_none() {
+        let line = &usage_line(
+            "2026-08-10T10:00:00Z",
+            "claude-sonnet-5",
+            "req_1",
+            "msg_1",
+            100,
+        );
+        let rec = parse_line(line).unwrap();
+        assert_eq!(rec.cwd, None);
+    }
+
+    #[test]
     fn civil_from_days_matches_known_dates() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(11_017), (2000, 3, 1));
@@ -961,7 +1027,8 @@ mod tests {
             ],
         );
 
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
 
         // sonnet-5 input rate is $2/Mtok, so one deduped 1M-token message = $2.
         // opus-4-8 input rate is $5/Mtok, so one 1M-token message = $5.
@@ -995,7 +1062,8 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
 
         let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
         assert!(
             (windows.daily.total_usd - 2.0).abs() < 1e-9,
             "the valid line after the malformed one must still be counted"
@@ -1020,7 +1088,13 @@ mod tests {
     #[test]
     fn aggregate_windows_ignores_unreadable_root() {
         let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
-        let windows = aggregate_windows(Path::new("/does/not/exist"), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(
+            Path::new("/does/not/exist"),
+            now,
+            "2026-08-10",
+            &mut analytics,
+        );
         assert_eq!(windows.daily.total_usd, 0.0);
         assert!(windows.daily.by_model.is_empty());
         assert_eq!(windows.weekly_usd, 0.0);
@@ -1050,11 +1124,69 @@ mod tests {
             ],
         );
 
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10");
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
         assert_eq!(windows.daily.total_usd, 0.0);
         assert_eq!(windows.weekly_usd, 0.0);
         assert_eq!(windows.monthly_usd, 0.0);
         assert_eq!(windows.block5h_usd, 0.0);
+    }
+
+    /// Regression coverage for the final-review fix that moved
+    /// `analytics.record` above the `cost <= 0.0` early-`continue`: a record
+    /// for a model `resolve_model` can't match (unrecognized/future,
+    /// deliberately not in the bundled `pricing.json`) prices to exactly
+    /// `0.0`, but still has real, non-empty usage — it must still reach the
+    /// analytics store with its token counts intact, not be dropped forever
+    /// (this feature has no backfill). The daily/weekly/monthly/block5h
+    /// totals it does NOT belong in are still asserted zero, proving that
+    /// part of the behavior is unchanged.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn aggregate_windows_still_records_an_unpriced_models_usage_for_analytics() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
+
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[&format!(
+                r#"{{"cwd":"{}","timestamp":"2026-08-10T10:00:00Z","requestId":"req_1","message":{{"model":"claude-future-model-9","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+                repo.path().display()
+            )],
+        );
+
+        let mut analytics =
+            crate::analytics::Sink::new(true, "2026-08-10".to_string(), "2026-08-09".to_string());
+        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
+        // An unrecognized model prices to $0, so it never joins the visible
+        // cost-chip totals.
+        assert_eq!(windows.daily.total_usd, 0.0);
+        assert!(windows.daily.by_model.is_empty());
+
+        let data_dir = tempfile::tempdir().unwrap();
+        analytics.flush(data_dir.path());
+        let db = redb::Database::open(crate::analytics::store::db_path(data_dir.path()))
+            .expect("an unpriced-but-recorded record must still produce a store file");
+        let txn = db.begin_read().unwrap();
+        let table = txn.open_table(crate::analytics::store::TABLE).unwrap();
+        let expected_key = format!(
+            "2026-08-10\0{}\0claude-future-model-9",
+            crate::repo_identity::resolve(repo.path().to_str().unwrap()).key
+        );
+        let value = table
+            .get(expected_key.as_str())
+            .unwrap()
+            .expect("the row must be keyed by the unrecognized model, not silently dropped");
+        let row: crate::analytics::store::Row = serde_json::from_slice(value.value()).unwrap();
+        assert_eq!(row.cost_usd, 0.0, "unpriced: cost is genuinely zero");
+        assert_eq!(
+            row.input_tokens, 1_000_000,
+            "but the raw token count is preserved for later re-pricing"
+        );
     }
 
     #[test]
@@ -1242,10 +1374,62 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(dir.path().join("cost-cache.lock"), b"").unwrap();
 
-        refresh_daily_cache(&root, dir.path());
+        refresh_daily_cache(&root, dir.path(), false);
 
         assert!(dir.path().join("cost-cache.json").exists());
         assert!(!dir.path().join("cost-cache.lock").exists());
+    }
+
+    // `analytics::store` (and its `db_path`) only exists when the `analytics`
+    // feature is compiled in; a plain build has nothing on disk for these
+    // two tests to inspect.
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn refresh_daily_cache_populates_the_analytics_store_when_enabled() {
+        let transcripts = tempfile::tempdir().unwrap();
+        let sub = transcripts.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let repo = tempfile::tempdir().unwrap(); // no .git — resolves to a `local:` identity
+        let today = today_utc_date(now_unix_secs());
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[&format!(
+                r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+                repo.path().display()
+            )],
+        );
+        let data_dir = tempfile::tempdir().unwrap();
+
+        refresh_daily_cache(transcripts.path(), data_dir.path(), true);
+
+        assert!(
+            crate::analytics::store::db_path(data_dir.path()).exists(),
+            "an enabled refresh with cost-bearing, cwd-tagged usage must write the analytics store"
+        );
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn refresh_daily_cache_skips_the_analytics_store_when_disabled() {
+        let transcripts = tempfile::tempdir().unwrap();
+        let sub = transcripts.path().join("proj");
+        std::fs::create_dir_all(&sub).unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let today = today_utc_date(now_unix_secs());
+        write_transcript(
+            &sub,
+            "a.jsonl",
+            &[&format!(
+                r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+                repo.path().display()
+            )],
+        );
+        let data_dir = tempfile::tempdir().unwrap();
+
+        refresh_daily_cache(transcripts.path(), data_dir.path(), false);
+
+        assert!(!crate::analytics::store::db_path(data_dir.path()).exists());
     }
 
     #[test]

@@ -297,7 +297,31 @@ fn drains_large_stdin_payload() {
 }
 
 fn run_command(args: &[&str], envs: &[(&str, &str)], cwd: Option<&Path>) -> std::process::Output {
-    let (mut cmd, _home) = isolated();
+    let home = tempfile::tempdir().unwrap();
+    run_command_with_home(home.path(), args, envs, cwd)
+}
+
+/// Like `run_command`, but rooted at a caller-supplied `home` instead of a
+/// fresh one — for tests that need the spawned process's `HOME`/`APPDATA`/
+/// `LOCALAPPDATA` to all resolve into a home directory another process (or
+/// an earlier step in this same test) already wrote state into.
+///
+/// This matters beyond convenience: `command_with_home` points
+/// `HOME`/`APPDATA`/`LOCALAPPDATA` all at the same path, but `run_command`
+/// only ever applied whatever the caller passed via `envs` on top of its own
+/// fresh `isolated()` home. A caller that only overrode `HOME` (the pattern
+/// this replaces) left `APPDATA`/`LOCALAPPDATA` pointed at that unrelated
+/// fresh tempdir — invisible on Unix, where `paths.rs`'s `base_vars()` never
+/// consults them, but on Windows it resolves the data dir from `APPDATA`/
+/// `LOCALAPPDATA` instead, so the spawned process would open a different,
+/// empty data dir than the one the test actually populated.
+fn run_command_with_home(
+    home: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    cwd: Option<&Path>,
+) -> std::process::Output {
+    let mut cmd = command_with_home(home);
     cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -353,6 +377,145 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
 
     assert!(!output.status.success());
     assert!(!output.stderr.is_empty());
+}
+
+// The three `#[cfg(feature = "analytics")]` tests below exercise the
+// `report` subcommand end to end: a fake git repo with an `origin` remote,
+// a fake Claude-Code transcript whose `cwd` points into that repo, real
+// ingestion via `--internal-refresh-daily-cost` against the real redb
+// store, then `ferrisbar report` reading it back. `env!("CARGO_BIN_EXE_ferrisbar")`
+// is built with whatever features the surrounding `cargo test` invocation
+// used, so these only run meaningfully — and only compile in the ingestion
+// path they need — under `cargo test --features analytics` (see the
+// `just test-analytics` recipe). Under a plain `cargo test` this whole
+// block is compiled out by `#[cfg]` and skipped, not failed; the fourth
+// test below, `report_without_the_analytics_feature_exits_nonzero`, is
+// gated the opposite way (`#[cfg(not(feature = "analytics"))]`) because it
+// checks the *other* build's behavior (that `report` exits nonzero when
+// the feature is off).
+
+#[cfg(feature = "analytics")]
+fn write_git_remote(repo_root: &Path, url: &str) {
+    let git_dir = repo_root.join(".git");
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::write(
+        git_dir.join("config"),
+        format!("[remote \"origin\"]\n\turl = {url}\n"),
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "analytics")]
+fn write_analytics_config(home: &Path) {
+    let dir = config_dir(home);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("config.toml"), "[analytics]\nenabled = true\n").unwrap();
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn report_reflects_usage_ingested_by_the_background_refresh() {
+    let (mut cmd, home) = isolated();
+    write_analytics_config(home.path());
+
+    let repo = tempfile::tempdir().unwrap();
+    write_git_remote(repo.path(), "https://github.com/kerryhatcher/ferrisbar.git");
+
+    let claude_config = tempfile::tempdir().unwrap();
+    let transcripts = claude_config.path().join("projects").join("proj");
+    fs::create_dir_all(&transcripts).unwrap();
+    let today = today_utc_date();
+    fs::write(
+        transcripts.join("a.jsonl"),
+        format!(
+            r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+            escape_for_string_literal(repo.path())
+        ),
+    )
+    .unwrap();
+
+    cmd.env("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())
+        .env_remove("FERRISBAR_COST_TTL_SECONDS") // this test needs the real ingestion path, not the disabled default
+        .args(["--internal-refresh-daily-cost"]);
+    let refresh_output = cmd
+        .output()
+        .expect("failed to run --internal-refresh-daily-cost");
+    assert!(refresh_output.status.success());
+
+    let report_output = run_command_with_home(
+        home.path(),
+        &["report", "--all", "--format", "json"],
+        &[("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())],
+        None,
+    );
+    assert!(report_output.status.success());
+    let stdout = String::from_utf8_lossy(&report_output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = parsed.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["repo"], "remote:github.com/kerryhatcher/ferrisbar");
+    // sonnet-5 input rate is $2/Mtok; 1M input tokens = $2.
+    assert!((rows[0]["cost_usd"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn report_defaults_to_the_repo_resolved_from_cwd() {
+    let (mut cmd, home) = isolated();
+    write_analytics_config(home.path());
+
+    let repo = tempfile::tempdir().unwrap();
+    write_git_remote(repo.path(), "https://github.com/someone/example.git");
+
+    let claude_config = tempfile::tempdir().unwrap();
+    let transcripts = claude_config.path().join("projects").join("proj");
+    fs::create_dir_all(&transcripts).unwrap();
+    let today = today_utc_date();
+    fs::write(
+        transcripts.join("a.jsonl"),
+        format!(
+            r#"{{"cwd":"{}","timestamp":"{today}T10:00:00Z","requestId":"req_1","message":{{"model":"claude-sonnet-5","id":"msg_1","usage":{{"input_tokens":1000000}}}}}}"#,
+            escape_for_string_literal(repo.path())
+        ),
+    )
+    .unwrap();
+
+    cmd.env("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())
+        .env_remove("FERRISBAR_COST_TTL_SECONDS")
+        .args(["--internal-refresh-daily-cost"]);
+    assert!(cmd.output().unwrap().status.success());
+
+    // Run `report` with cwd set to the repo itself — no `--repo` flag.
+    let report_output = run_command_with_home(
+        home.path(),
+        &["report"],
+        &[("CLAUDE_CONFIG_DIR", claude_config.path().to_str().unwrap())],
+        Some(repo.path()),
+    );
+    assert!(report_output.status.success());
+    let stdout = String::from_utf8_lossy(&report_output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = parsed.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["repo"], "remote:github.com/someone/example");
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn report_with_no_data_yet_prints_an_empty_array_and_exits_zero() {
+    let output = run_command(&["report", "--all"], &[], None);
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
+}
+
+// Mirror image of the three `#[cfg(feature = "analytics")]` tests above:
+// this one checks the *other* build's behavior (that `report` exits
+// nonzero when the feature is off), so it's gated the opposite way.
+#[cfg(not(feature = "analytics"))]
+#[test]
+fn report_without_the_analytics_feature_exits_nonzero() {
+    let output = run_command(&["report"], &[], None);
+    assert!(!output.status.success());
 }
 
 #[test]

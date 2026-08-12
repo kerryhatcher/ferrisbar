@@ -48,6 +48,11 @@ show_daily   = true
 show_weekly  = true
 show_monthly = true
 show_block5h = true
+
+[analytics]
+enabled = false  # off by default. Requires ferrisbar to be built with the
+                  # `analytics` Cargo feature to have any effect — see
+                  # README.md's Analytics section.
 "#;
 
 pub const MIN_MAX_SIZE_BYTES: u64 = 4096;
@@ -117,6 +122,11 @@ impl Default for CostConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AnalyticsConfig {
+    pub enabled: bool,
+}
+
 // Five independent per-window on/off toggles (plus `enabled`), not a state
 // machine: each budget window is shown or hidden on its own, with no
 // exclusivity between them.
@@ -174,6 +184,7 @@ pub struct Config {
     pub display: DisplayConfig,
     pub cost: CostConfig,
     pub budget: BudgetConfig,
+    pub analytics: AnalyticsConfig,
 }
 
 impl Default for LogConfig {
@@ -209,6 +220,7 @@ impl Default for Config {
             display: DisplayConfig::default(),
             cost: CostConfig::default(),
             budget: BudgetConfig::default(),
+            analytics: AnalyticsConfig::default(),
         }
     }
 }
@@ -349,6 +361,7 @@ pub fn from_toml_str(input: &str) -> (Config, Vec<ParseWarning>) {
             }
         },
         budget: parse_budget(&table),
+        analytics: parse_analytics(&table),
     };
 
     (config, Vec::new())
@@ -387,6 +400,14 @@ fn parse_budget(table: &toml::Table) -> BudgetConfig {
         show_weekly: get_bool(budget, "show_weekly").unwrap_or(defaults.show_weekly),
         show_monthly: get_bool(budget, "show_monthly").unwrap_or(defaults.show_monthly),
         show_block5h: get_bool(budget, "show_block5h").unwrap_or(defaults.show_block5h),
+    }
+}
+
+fn parse_analytics(table: &toml::Table) -> AnalyticsConfig {
+    let analytics = section(table, "analytics");
+    let defaults = AnalyticsConfig::default();
+    AnalyticsConfig {
+        enabled: get_bool(analytics, "enabled").unwrap_or(defaults.enabled),
     }
 }
 
@@ -815,5 +836,36 @@ mod tests {
         assert!(c.budget.enabled);
         assert!((c.budget.weekly_usd - 100.0).abs() < f64::EPSILON);
         assert!(c.budget.show_session);
+    }
+
+    #[test]
+    fn analytics_defaults_match_the_documented_values() {
+        let c = AnalyticsConfig::default();
+        assert!(!c.enabled);
+    }
+
+    #[test]
+    fn template_includes_analytics_block() {
+        assert!(TEMPLATE.contains("[analytics]"));
+        assert!(TEMPLATE.contains("enabled"));
+    }
+
+    #[test]
+    fn analytics_values_are_read_from_toml() {
+        let (c, _) = from_toml_str("[analytics]\nenabled = true\n");
+        assert!(c.analytics.enabled);
+    }
+
+    #[test]
+    fn analytics_partial_block_fills_in_defaults() {
+        let (c, _) = from_toml_str("[analytics]\n");
+        assert!(!c.analytics.enabled);
+    }
+
+    #[test]
+    fn template_round_trips_including_analytics() {
+        let (c, warnings) = from_toml_str(TEMPLATE);
+        assert!(warnings.is_empty());
+        assert_eq!(c, Config::default());
     }
 }
