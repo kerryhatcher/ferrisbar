@@ -68,7 +68,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: cargo-auditable
 
