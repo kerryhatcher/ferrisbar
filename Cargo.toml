@@ -28,7 +28,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # Pure-Rust embedded storage for the optional per-repo cost analytics
 # store — no C toolchain, unlike rusqlite/Diesel's SQLite backends. See
 # docs/superpowers/specs/2026-08-11-repo-cost-analytics-design.md.
-redb = { version = "2", optional = true }
+redb = { version = "4", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
