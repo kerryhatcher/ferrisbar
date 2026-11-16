@@ -1085,3 +1085,28 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
         "no lock may be left behind"
     );
 }
+
+#[test]
+fn budget_line_uses_the_plans_real_percentages_from_the_payload() {
+    let (mut cmd, home) = isolated();
+    let dir = config_dir(home.path());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.toml"),
+        "[budget]\nenabled = true\nshow_session = false\n",
+    )
+    .unwrap();
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            br#"{"model":{"display_name":"Sonnet"},"rate_limits":{"five_hour":{"used_percentage":24},"seven_day":{"used_percentage":81}}}"#,
+        )
+        .unwrap();
+    let out = String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).into_owned();
+    assert!(out.contains("wk") && out.contains("81%"), "{out}");
+    assert!(out.contains("5h") && out.contains("24%"), "{out}");
+}

@@ -98,17 +98,29 @@ fn flush_config_warnings(logger: &log::Logger, warnings: &[config::ParseWarning]
 /// only so `cost_cache::spawn_refresh` can re-invoke this same binary as a
 /// detached background process (see that module's docs), never something a
 /// user types themselves.
-fn dispatch_subcommand(cfg: &config::Config, data_dir: Option<&Path>) -> bool {
+fn dispatch_subcommand(
+    cfg: &config::Config,
+    data_dir: Option<&Path>,
+    logger: &log::Logger,
+) -> bool {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
         [] => false,
         [cmd] if cmd == "--internal-refresh-daily-cost" => {
             if let Some(data_dir) = data_dir {
-                cost::refresh_daily_cache(
+                // Unpriced models mean every total is an undercount; say so
+                // in the log rather than failing silently.
+                for model in cost::refresh_daily_cache(
                     &resolve_transcripts_dir(cfg),
                     data_dir,
                     cfg.analytics.enabled,
-                );
+                    cfg.budget.weekly_anchor,
+                ) {
+                    logger.log(&log::warn(
+                        "unpriced_model",
+                        format!("no pricing entry for model {model}; its usage counts as $0"),
+                    ));
+                }
             }
             true
         }
@@ -218,7 +230,7 @@ fn main() {
     let logger = log::Logger::new(&cfg, data_dir.as_deref());
     flush_config_warnings(&logger, &warnings);
 
-    if dispatch_subcommand(&cfg, data_dir.as_deref()) {
+    if dispatch_subcommand(&cfg, data_dir.as_deref(), &logger) {
         return;
     }
 
@@ -299,6 +311,7 @@ fn main() {
         &cfg.display,
         data_dir.as_deref(),
         session_cost,
+        payload.plan_usage(),
     ) {
         output.push('\n');
         output.push_str(&budget);
