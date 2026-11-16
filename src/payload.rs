@@ -26,6 +26,34 @@ pub struct Payload {
     pub context_window: Option<ContextWindow>,
     #[serde(default, deserialize_with = "lenient_option")]
     pub cost: Option<Cost>,
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub rate_limits: Option<RateLimits>,
+}
+
+/// claude.ai Pro/Max plan usage, which Claude Code passes only to
+/// subscribers and only after the first API response. Each window may be
+/// independently absent.
+#[derive(Deserialize, Default)]
+pub struct RateLimits {
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub five_hour: Option<RateWindow>,
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub seven_day: Option<RateWindow>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct RateWindow {
+    /// 0..=100 (may exceed 100 once over the limit).
+    #[serde(default, deserialize_with = "lenient_option")]
+    pub used_percentage: Option<f64>,
+}
+
+/// The plan's real usage percentages, already rounded and clamped for
+/// display. `None` per window when the payload doesn't carry it.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct PlanUsage {
+    pub five_hour: Option<u8>,
+    pub seven_day: Option<u8>,
 }
 
 #[derive(Deserialize, Default)]
@@ -54,7 +82,22 @@ pub struct Cost {
     pub total_cost_usd: Option<f64>,
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn pct_u8(window: Option<&RateWindow>) -> Option<u8> {
+    let v = window?.used_percentage?;
+    // NaN/negative are impossible from JSON but cheap to refuse.
+    (v.is_finite() && v >= 0.0).then(|| v.round().min(255.0) as u8)
+}
+
 impl Payload {
+    pub fn plan_usage(&self) -> PlanUsage {
+        let limits = self.rate_limits.as_ref();
+        PlanUsage {
+            five_hour: pct_u8(limits.and_then(|l| l.five_hour.as_ref())),
+            seven_day: pct_u8(limits.and_then(|l| l.seven_day.as_ref())),
+        }
+    }
+
     pub fn model_name(&self) -> String {
         self.model
             .as_ref()
@@ -214,6 +257,31 @@ mod tests {
         .unwrap();
         assert_eq!(payload.remaining_percentage(), Some(42.5));
         assert_eq!(payload.total_tokens(), 1_000_000.0);
+    }
+
+    #[test]
+    fn plan_usage_reads_both_windows_rounded() {
+        let payload: Payload = serde_json::from_str(
+            r#"{"rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1},
+                "seven_day":{"used_percentage":81.2}}}"#,
+        )
+        .unwrap();
+        let u = payload.plan_usage();
+        assert_eq!(u.five_hour, Some(24));
+        assert_eq!(u.seven_day, Some(81));
+    }
+
+    #[test]
+    fn plan_usage_absent_or_malformed_is_none() {
+        for raw in [
+            "{}",
+            r#"{"rate_limits":"x"}"#,
+            r#"{"rate_limits":{"five_hour":{"used_percentage":"high"}}}"#,
+            r#"{"rate_limits":{"seven_day":{"used_percentage":-3}}}"#,
+        ] {
+            let payload: Payload = serde_json::from_str(raw).unwrap();
+            assert_eq!(payload.plan_usage(), PlanUsage::default(), "{raw}");
+        }
     }
 
     #[test]

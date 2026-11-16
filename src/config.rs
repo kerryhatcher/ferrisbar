@@ -42,6 +42,12 @@ weekly_usd   = 100.0   # anchor budget; daily and monthly derive from it
 workdays     = 5       # divisor for the derived daily budget (weekly/workdays)
 session_usd  = 5.0      # explicit: a single session has no natural week fraction
 block5h_usd  = 15.0     # explicit: the rolling 5-hour rate-limit window
+plan_limits  = true     # on claude.ai Pro/Max, show the plan's real 5h and weekly
+                        # usage % (from Claude Code's payload) instead of $ bars
+weekly_reset_day        = "mon"    # when your plan's week rolls over (mon..sun)
+weekly_reset_time       = "00:00"  # ...at this local time, 24h HH:MM
+weekly_reset_utc_offset = "+00:00" # ...in this fixed UTC offset (no DST handling:
+                                   # US Eastern is "-05:00" in winter, "-04:00" in summer)
 bar_width    = 6        # width of each mini progress bar
 show_session = true
 show_daily   = true
@@ -127,6 +133,46 @@ pub struct AnalyticsConfig {
     pub enabled: bool,
 }
 
+/// When the weekly budget window starts: a weekday, a time of day and a
+/// fixed UTC offset. The default (Monday 00:00 UTC) is the calendar week
+/// ferrisbar has always used. A fixed offset rather than a named timezone
+/// keeps the dependency count at four; the cost is that the user re-edits
+/// the offset when DST flips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WeeklyAnchor {
+    /// 0 = Monday ... 6 = Sunday.
+    pub weekday: u8,
+    pub secs_into_day: i64,
+    pub utc_offset_secs: i64,
+}
+
+fn parse_weekday(raw: &str) -> Option<u8> {
+    let lowered = raw.trim().to_ascii_lowercase();
+    let idx = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        .iter()
+        .position(|d| lowered.starts_with(d))?;
+    u8::try_from(idx).ok()
+}
+
+/// `HH:MM`, 00:00..=23:59, as seconds into the day.
+fn parse_time_of_day(raw: &str) -> Option<i64> {
+    let (h, m) = raw.trim().split_once(':')?;
+    let (h, m) = (h.parse::<i64>().ok()?, m.parse::<i64>().ok()?);
+    ((0..24).contains(&h) && (0..60).contains(&m)).then_some(h * 3600 + m * 60)
+}
+
+/// `+HH:MM` / `-HH:MM`, within +-14:00, as signed seconds.
+fn parse_utc_offset(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    let sign = match raw.chars().next()? {
+        '+' => 1,
+        '-' => -1,
+        _ => return None,
+    };
+    let secs = parse_time_of_day(&raw[1..])?;
+    (secs <= 14 * 3600).then_some(sign * secs)
+}
+
 // Five independent per-window on/off toggles (plus `enabled`), not a state
 // machine: each budget window is shown or hidden on its own, with no
 // exclusivity between them.
@@ -138,6 +184,8 @@ pub struct BudgetConfig {
     pub workdays: f64,
     pub session_usd: f64,
     pub block5h_usd: f64,
+    pub plan_limits: bool,
+    pub weekly_anchor: WeeklyAnchor,
     pub bar_width: u8,
     pub show_session: bool,
     pub show_daily: bool,
@@ -154,6 +202,8 @@ impl Default for BudgetConfig {
             workdays: 5.0,
             session_usd: 5.0,
             block5h_usd: 15.0,
+            plan_limits: true,
+            weekly_anchor: WeeklyAnchor::default(),
             bar_width: 6,
             show_session: true,
             show_daily: true,
@@ -380,6 +430,19 @@ fn parse_budget(table: &toml::Table) -> BudgetConfig {
             v.clamp(MIN_BAR_WIDTH, MAX_BAR_WIDTH)
         });
 
+    let default_anchor = defaults.weekly_anchor;
+    let weekly_anchor = WeeklyAnchor {
+        weekday: get_string(budget, "weekly_reset_day")
+            .and_then(|v| parse_weekday(&v))
+            .unwrap_or(default_anchor.weekday),
+        secs_into_day: get_string(budget, "weekly_reset_time")
+            .and_then(|v| parse_time_of_day(&v))
+            .unwrap_or(default_anchor.secs_into_day),
+        utc_offset_secs: get_string(budget, "weekly_reset_utc_offset")
+            .and_then(|v| parse_utc_offset(&v))
+            .unwrap_or(default_anchor.utc_offset_secs),
+    };
+
     BudgetConfig {
         enabled: get_bool(budget, "enabled").unwrap_or(defaults.enabled),
         weekly_usd: get_number(budget, "weekly_usd")
@@ -394,6 +457,8 @@ fn parse_budget(table: &toml::Table) -> BudgetConfig {
         block5h_usd: get_number(budget, "block5h_usd")
             .filter(|v| *v > 0.0)
             .unwrap_or(defaults.block5h_usd),
+        plan_limits: get_bool(budget, "plan_limits").unwrap_or(defaults.plan_limits),
+        weekly_anchor,
         bar_width,
         show_session: get_bool(budget, "show_session").unwrap_or(defaults.show_session),
         show_daily: get_bool(budget, "show_daily").unwrap_or(defaults.show_daily),
@@ -764,6 +829,30 @@ mod tests {
         assert!(
             b.show_session && b.show_daily && b.show_weekly && b.show_monthly && b.show_block5h
         );
+    }
+
+    #[test]
+    fn weekly_anchor_parses_day_time_and_offset() {
+        let (c, w) = from_toml_str(
+            "[budget]\nweekly_reset_day = \"Thu\"\nweekly_reset_time = \"04:00\"\n\
+             weekly_reset_utc_offset = \"-05:00\"\nplan_limits = false\n",
+        );
+        assert_eq!(w.len(), 0);
+        let a = c.budget.weekly_anchor;
+        assert_eq!(a.weekday, 3);
+        assert_eq!(a.secs_into_day, 4 * 3600);
+        assert_eq!(a.utc_offset_secs, -5 * 3600);
+        assert!(!c.budget.plan_limits);
+    }
+
+    #[test]
+    fn weekly_anchor_bad_values_fall_back_per_field() {
+        let (c, _) = from_toml_str(
+            "[budget]\nweekly_reset_day = \"someday\"\nweekly_reset_time = \"25:00\"\n\
+             weekly_reset_utc_offset = \"-15:00\"\n",
+        );
+        assert_eq!(c.budget.weekly_anchor, WeeklyAnchor::default());
+        assert!(c.budget.plan_limits);
     }
 
     #[test]
