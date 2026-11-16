@@ -322,7 +322,10 @@ mod tests {
         let logger = Logger::new(&cfg, Some(dir.path()));
         logger.log(&warn("stdin_parse_failed", "x"));
 
-        assert!(read_lines(&crate::paths::default_log_path(dir.path())).is_empty());
+        assert_eq!(
+            read_lines(&crate::paths::default_log_path(dir.path())).len(),
+            0
+        );
     }
 
     #[test]

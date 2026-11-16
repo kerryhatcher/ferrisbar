@@ -76,6 +76,7 @@ const OVERRIDABLE_ENV_VARS: &[&str] = &[
     "FERRISBAR_LOG_PATH",
     "FERRISBAR_LOG_LEVEL",
     "FERRISBAR_COST_TTL_SECONDS",
+    "FERRISBAR_CAPTURE_PAYLOAD",
 ];
 
 /// A `Command` rooted at `home` for `HOME`/`APPDATA`/`LOCALAPPDATA`, with
@@ -144,6 +145,30 @@ fn minimal_payload_shows_model_and_dirname_only() {
         &[("CLAUDE_CONFIG_DIR", empty_todos.path().to_str().unwrap())],
     );
     assert_eq!(out, "\x1b[2mmyproject\x1b[0m │ \x1b[2mSonnet\x1b[0m");
+}
+
+#[test]
+fn capture_payload_env_writes_the_raw_stdin_to_the_named_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("captured.json");
+    let payload =
+        r#"{"model":{"display_name":"Sonnet"},"rate_limits":{"seven_day":{"used_percentage":81}}}"#;
+    run_with_env(
+        payload,
+        &[("FERRISBAR_CAPTURE_PAYLOAD", target.to_str().unwrap())],
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), payload);
+}
+
+#[test]
+fn capture_payload_to_an_unwritable_path_still_renders() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("no-such-dir").join("p.json");
+    let out = run_with_env(
+        r#"{"model":{"display_name":"Sonnet"}}"#,
+        &[("FERRISBAR_CAPTURE_PAYLOAD", bad.to_str().unwrap())],
+    );
+    assert!(out.contains("Sonnet"));
 }
 
 #[test]
@@ -376,7 +401,7 @@ fn unknown_subcommand_exits_nonzero_without_hanging() {
     let output = run_command(&["badsubcommand"], &[], None);
 
     assert!(!output.status.success());
-    assert!(!output.stderr.is_empty());
+    assert_ne!(output.stderr.len(), 0);
 }
 
 // The three `#[cfg(feature = "analytics")]` tests below exercise the
@@ -628,7 +653,7 @@ fn setup_fails_loudly_when_config_dir_unresolvable() {
     let output = child.wait_with_output().expect("failed to wait on child");
 
     assert!(!output.status.success());
-    assert!(!output.stderr.is_empty());
+    assert_ne!(output.stderr.len(), 0);
 }
 
 fn run(cmd: &mut std::process::Command, stdin: &str) -> (String, bool) {

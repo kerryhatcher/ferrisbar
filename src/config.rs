@@ -479,7 +479,7 @@ mod tests {
     fn empty_input_yields_defaults_without_warning() {
         let (c, warnings) = from_toml_str("");
         assert_eq!(c, Config::default());
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
     }
 
     #[test]
@@ -498,7 +498,7 @@ mod tests {
     fn unknown_keys_are_ignored() {
         let (c, warnings) = from_toml_str("[log]\nfrom_the_future = 42\n");
         assert_eq!(c, Config::default());
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
         assert!(path.exists(), "config file must be created on first run");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), TEMPLATE);
         assert_eq!(c, Config::default());
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
     }
 
     #[test]
@@ -574,7 +574,7 @@ mod tests {
         let (c, warnings) = load(Some(&path));
 
         assert_eq!(c.log.max_archives, 3);
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn template_round_trips_including_display() {
         let (c, warnings) = from_toml_str(TEMPLATE);
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
         assert_eq!(c, Config::default());
     }
 
@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn template_round_trips_including_budget() {
         let (c, warnings) = from_toml_str(TEMPLATE);
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
         assert_eq!(c, Config::default());
     }
 
@@ -865,7 +865,7 @@ mod tests {
     #[test]
     fn template_round_trips_including_analytics() {
         let (c, warnings) = from_toml_str(TEMPLATE);
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
         assert_eq!(c, Config::default());
     }
 }
