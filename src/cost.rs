@@ -840,6 +840,18 @@ mod tests {
     }
 
     #[test]
+    fn current_models_resolve_to_their_own_rates_not_an_older_family() {
+        let pricing = load_pricing();
+        let rate = |id: &str| resolve_model(id, &pricing).unwrap().input;
+        assert!((rate("claude-opus-5-5") - 4.0).abs() < f64::EPSILON);
+        assert!((rate("claude-opus-5") - 5.0).abs() < f64::EPSILON);
+        assert!((rate("claude-haiku-5-5") - 0.1).abs() < f64::EPSILON);
+        assert!((rate("claude-sonnet-5-5") - 2.0).abs() < f64::EPSILON);
+        assert!((rate("claude-fable-5-2") - 8.0).abs() < f64::EPSILON);
+        assert!((rate("claude-fable-5") - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn resolve_model_alias_fallback() {
         let pricing = load_pricing();
         assert!(resolve_model("claude-opus-5", &pricing).is_some());
@@ -1147,7 +1159,7 @@ mod tests {
             &mut analytics,
         );
         assert_eq!(windows.daily.total_usd, 0.0);
-        assert!(windows.daily.by_model.is_empty());
+        assert_eq!(windows.daily.by_model.len(), 0);
         assert_eq!(windows.weekly_usd, 0.0);
         assert_eq!(windows.monthly_usd, 0.0);
         assert_eq!(windows.block5h_usd, 0.0);
@@ -1216,7 +1228,7 @@ mod tests {
         // An unrecognized model prices to $0, so it never joins the visible
         // cost-chip totals.
         assert_eq!(windows.daily.total_usd, 0.0);
-        assert!(windows.daily.by_model.is_empty());
+        assert_eq!(windows.daily.by_model.len(), 0);
 
         let data_dir = tempfile::tempdir().unwrap();
         analytics.flush(data_dir.path());
