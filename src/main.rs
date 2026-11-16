@@ -61,6 +61,21 @@ fn apply_env_overrides(cfg: &mut config::Config) {
     }
 }
 
+/// Debug aid: when `FERRISBAR_CAPTURE_PAYLOAD` names a file, the raw stdin
+/// payload of this render is written there (replacing any previous capture,
+/// so the file never grows). Exists so a user can grab the exact JSON Claude
+/// Code sends — e.g. to see which rate-limit fields their plan exposes —
+/// without wrapping the binary in a `tee`. Fails soft: a write error is
+/// logged, never surfaced on stdout.
+fn capture_payload(logger: &log::Logger, input: &str) {
+    let Some(path) = env::var_os("FERRISBAR_CAPTURE_PAYLOAD").filter(|v| !v.is_empty()) else {
+        return;
+    };
+    if let Err(e) = std::fs::write(&path, input) {
+        logger.log(&log::warn("payload_capture_failed", e.to_string()));
+    }
+}
+
 fn flush_config_warnings(logger: &log::Logger, warnings: &[config::ParseWarning]) {
     for warning in warnings {
         match warning {
@@ -212,6 +227,8 @@ fn main() {
         logger.log(&log::warn("stdin_read_failed", e.to_string()));
         return;
     }
+
+    capture_payload(&logger, &input);
 
     let payload = match serde_json::from_str::<Payload>(&input) {
         Ok(payload) => payload,
