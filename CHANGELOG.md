@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/kerryhatcher/ferrisbar/compare/v0.5.0...v0.6.0) (2026-11-25)
+
+
+### Features
+
+* add [budget] mode for subscription vs usage billing ([4a86206](https://github.com/kerryhatcher/ferrisbar/commit/4a862063de8b7021d85f52dbc2983cc966edb522))
+* add `ferrisbar openrouter` for budget, free quota and account credits ([fa7e38d](https://github.com/kerryhatcher/ferrisbar/commit/fa7e38d485c0ee316c0fe2f9ffd0c2d9a89b0d36))
+* add `ferrisbar openrouter` to print key spend and limits ([0fd45b2](https://github.com/kerryhatcher/ferrisbar/commit/0fd45b272783b68e7de09dcc06b881ea842fd4e2))
+* add FERRISBAR_CAPTURE_PAYLOAD to dump the raw stdin payload ([5eda445](https://github.com/kerryhatcher/ferrisbar/commit/5eda44546c257aadd0716b78bf089e2ed336107c)), closes [#33](https://github.com/kerryhatcher/ferrisbar/issues/33)
+* plan rate-limit bars and weekly reset anchor ([#33](https://github.com/kerryhatcher/ferrisbar/issues/33), part 2) ([7d2caa9](https://github.com/kerryhatcher/ferrisbar/commit/7d2caa994e4664d745a3fa1c0ff1a816f95feda3))
+* plan rate-limit bars, weekly reset anchor, unpriced-model warning ([71d8524](https://github.com/kerryhatcher/ferrisbar/commit/71d8524d2845341cdfcc5886106f615394dbce47)), closes [#33](https://github.com/kerryhatcher/ferrisbar/issues/33)
+* show OpenRouter budget, free-model quota and account credits ([532b493](https://github.com/kerryhatcher/ferrisbar/commit/532b49302189502f87e7e4d472b758dc067d07b3))
+
+
+### Bug Fixes
+
+* current-model pricing and payload capture ([#33](https://github.com/kerryhatcher/ferrisbar/issues/33), part 1) ([f6d3967](https://github.com/kerryhatcher/ferrisbar/commit/f6d3967dc7fd464f166c548223100e5377b431b9))
+* price Opus 5.x, Haiku 5.x and current Fable/Sonnet models correctly ([2dd51ad](https://github.com/kerryhatcher/ferrisbar/commit/2dd51adcc5343134fdf2bfd4fb6ee732bce1117a)), closes [#33](https://github.com/kerryhatcher/ferrisbar/issues/33)
+
 ## [0.5.0](https://github.com/kerryhatcher/ferrisbar/compare/v0.4.0...v0.5.0) (2026-08-12)
 
 
