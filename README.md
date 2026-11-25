@@ -390,6 +390,7 @@ Each overrides its config-file counterpart.
 | `FERRISBAR_LOG_PATH` | `log.path` | Log to somewhere else for one session. |
 | `FERRISBAR_LOG_LEVEL` | `log.level` | Turn logging up without editing the file. |
 | `FERRISBAR_COST_TTL_SECONDS` | `cost.ttl_seconds` | Silence the daily-cost line (and its background refresh) for one session without editing the file — set to `0`. |
+| `FERRISBAR_CAPTURE_PAYLOAD` | *(none)* | Debug aid: write the raw JSON Claude Code sent on stdin to this file (overwritten each render). Use it to see exactly which fields, such as rate limits, your plan exposes. |
 
 With the default thresholds above, the gauge maps how much of your *usable*
 window is spent as follows; custom threshold values replace these
