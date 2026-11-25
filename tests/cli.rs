@@ -1132,9 +1132,12 @@ fn subscription_mode_hides_session_daily_and_monthly_bars() {
         )
         .unwrap();
     let out = String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).into_owned();
-    assert!(out.contains("wk") && out.contains("2%"), "{out}");
-    assert!(out.contains("5h") && out.contains("15%"), "{out}");
-    assert!(!out.contains("sess"), "{out}");
-    assert!(!out.contains("day"), "{out}");
-    assert!(!out.contains("mo"), "{out}");
+    // Check only the budget line. The first line carries the cwd's directory
+    // name, which can contain any of these substrings.
+    let budget = out.lines().find(|l| l.contains("5h")).unwrap_or_default();
+    assert!(budget.contains("wk") && budget.contains("2%"), "{out}");
+    assert!(budget.contains("5h") && budget.contains("15%"), "{out}");
+    assert!(!budget.contains("sess"), "{out}");
+    assert!(!budget.contains("day"), "{out}");
+    assert!(!budget.contains("mo"), "{out}");
 }

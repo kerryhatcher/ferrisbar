@@ -285,7 +285,7 @@ weekly_usd   = 100.0
 workdays     = 5
 session_usd  = 5.0
 block5h_usd  = 15.0
-plan_limits  = true
+mode         = "auto"
 weekly_reset_day        = "mon"
 weekly_reset_time       = "00:00"
 weekly_reset_utc_offset = "+00:00"
@@ -345,11 +345,23 @@ the width of each mini bar, independent of `display.bar_width`.
 Claude Pro/Max limits are percentages of an undisclosed allowance, not dollar
 caps. When Claude Code passes `rate_limits` (subscribers only, after the
 session's first API response), ferrisbar draws the `5h` and `wk` bars from
-those real percentages, so they match `/usage` with nothing to calibrate. Set
-`plan_limits = false` to keep dollar bars instead. API-key users and anyone
-without that data fall back to the dollar bars automatically. Claude Code
-reports no per-model meters (such as the separate Fable one), so ferrisbar
-has none either.
+those real percentages, so they match `/usage` with nothing to calibrate.
+`mode` picks how the budget line behaves:
+
+- `mode = "auto"` (the default) uses plan percentages where Claude Code
+  reports them and dollar bars otherwise. API-key users and anyone without
+  that data get the dollar bars.
+- `mode = "subscription"` is for Pro/Max. It shows only the plan's `5h` and
+  `wk` percentages and hides the dollar windows (`sess`, `day`, `mo`), since
+  those figures are estimates rather than plan quota.
+- `mode = "usage"` is for pay-for-usage (Enterprise/API) billing. It shows
+  only the dollar bars and ignores any plan percentages in the payload.
+
+The older `plan_limits` boolean still works when `mode` is absent: `false`
+means `usage` and `true` means `auto`. An explicit `mode` always wins.
+
+Claude Code reports no per-model meters (such as the separate Fable one), so
+ferrisbar has none either.
 
 The dollar bars are only a proxy, so calibrate them against `/usage`: divide
 what ferrisbar shows you've spent in the current window by the percentage
