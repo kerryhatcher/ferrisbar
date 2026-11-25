@@ -1141,3 +1141,13 @@ fn subscription_mode_hides_session_daily_and_monthly_bars() {
     assert!(!budget.contains("day"), "{out}");
     assert!(!budget.contains("mo"), "{out}");
 }
+
+#[test]
+fn openrouter_without_a_key_fails_fast_and_names_the_variable() {
+    // An empty value counts as unset, so this never reaches the network.
+    let output = run_command(&["openrouter"], &[("OPENROUTER_API_KEY", "")], None);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("OPENROUTER_API_KEY"), "{stderr}");
+    assert_eq!(output.stdout.len(), 0);
+}
