@@ -7,6 +7,7 @@ mod cost_cache;
 mod git;
 mod layout;
 mod log;
+mod openrouter;
 mod paths;
 mod payload;
 mod repo_identity;
@@ -142,6 +143,9 @@ fn dispatch_subcommand(
             run_report(data_dir, rest);
             true
         }
+        [cmd] if cmd == "openrouter" => {
+            std::process::exit(openrouter::run());
+        }
         _ => {
             let program = env::args().next().unwrap_or_default();
             let program_name = Path::new(&program).file_name().map_or_else(
@@ -158,12 +162,12 @@ fn usage_line(program_name: &str) -> String {
     #[cfg(feature = "analytics")]
     {
         format!(
-            "Usage: {program_name} [setup [--project]] [report [--repo KEY] [--from DATE] [--to DATE] [--all] [--format json|csv]]"
+            "Usage: {program_name} [setup [--project]] [openrouter] [report [--repo KEY] [--from DATE] [--to DATE] [--all] [--format json|csv]]"
         )
     }
     #[cfg(not(feature = "analytics"))]
     {
-        format!("Usage: {program_name} [setup [--project]]")
+        format!("Usage: {program_name} [setup [--project]] [openrouter]")
     }
 }
 
