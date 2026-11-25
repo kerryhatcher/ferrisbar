@@ -42,8 +42,9 @@ weekly_usd   = 100.0   # anchor budget; daily and monthly derive from it
 workdays     = 5       # divisor for the derived daily budget (weekly/workdays)
 session_usd  = 5.0      # explicit: a single session has no natural week fraction
 block5h_usd  = 15.0     # explicit: the rolling 5-hour rate-limit window
-plan_limits  = true     # on claude.ai Pro/Max, show the plan's real 5h and weekly
-                        # usage % (from Claude Code's payload) instead of $ bars
+mode         = "auto"   # "subscription": Pro/Max — only the plan's real 5h and weekly %,
+                        #   no $ bars. "usage": Enterprise/API — $ budgets only.
+                        #   "auto": plan % where Claude Code sends it, else $ budgets
 weekly_reset_day        = "mon"    # when your plan's week rolls over (mon..sun)
 weekly_reset_time       = "00:00"  # ...at this local time, 24h HH:MM
 weekly_reset_utc_offset = "+00:00" # ...in this fixed UTC offset (no DST handling:
@@ -173,6 +174,45 @@ fn parse_utc_offset(raw: &str) -> Option<i64> {
     (secs <= 14 * 3600).then_some(sign * secs)
 }
 
+/// How the budget line reads the payload and the configured dollar limits.
+/// See `docs/superpowers/specs/2026-11-25-billing-mode-design.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BillingMode {
+    /// Plan percentages where Claude Code reports them; dollar budgets otherwise.
+    #[default]
+    Auto,
+    /// Pro/Max: only the plan's own 5h and weekly percentages. Dollar windows
+    /// are hidden because no dollar figure here is a plan quota.
+    Subscription,
+    /// Pay-for-usage (Enterprise / API): dollar budgets only. Plan percentages
+    /// in the payload are ignored.
+    Usage,
+}
+
+impl BillingMode {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "subscription" => Some(Self::Subscription),
+            "usage" => Some(Self::Usage),
+            _ => None,
+        }
+    }
+}
+
+/// `mode` wins when it names a known value. Otherwise the legacy
+/// `plan_limits` boolean is honoured: `false` meant "dollar bars only", which
+/// is `Usage`; `true` was the default and maps to `Auto`.
+fn parse_billing_mode(budget: Option<&toml::Table>) -> BillingMode {
+    get_string(budget, "mode")
+        .and_then(|v| BillingMode::parse(&v))
+        .or_else(|| match get_bool(budget, "plan_limits") {
+            Some(false) => Some(BillingMode::Usage),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 // Five independent per-window on/off toggles (plus `enabled`), not a state
 // machine: each budget window is shown or hidden on its own, with no
 // exclusivity between them.
@@ -184,7 +224,7 @@ pub struct BudgetConfig {
     pub workdays: f64,
     pub session_usd: f64,
     pub block5h_usd: f64,
-    pub plan_limits: bool,
+    pub mode: BillingMode,
     pub weekly_anchor: WeeklyAnchor,
     pub bar_width: u8,
     pub show_session: bool,
@@ -202,7 +242,7 @@ impl Default for BudgetConfig {
             workdays: 5.0,
             session_usd: 5.0,
             block5h_usd: 15.0,
-            plan_limits: true,
+            mode: BillingMode::Auto,
             weekly_anchor: WeeklyAnchor::default(),
             bar_width: 6,
             show_session: true,
@@ -457,7 +497,7 @@ fn parse_budget(table: &toml::Table) -> BudgetConfig {
         block5h_usd: get_number(budget, "block5h_usd")
             .filter(|v| *v > 0.0)
             .unwrap_or(defaults.block5h_usd),
-        plan_limits: get_bool(budget, "plan_limits").unwrap_or(defaults.plan_limits),
+        mode: parse_billing_mode(budget),
         weekly_anchor,
         bar_width,
         show_session: get_bool(budget, "show_session").unwrap_or(defaults.show_session),
@@ -842,7 +882,8 @@ mod tests {
         assert_eq!(a.weekday, 3);
         assert_eq!(a.secs_into_day, 4 * 3600);
         assert_eq!(a.utc_offset_secs, -5 * 3600);
-        assert!(!c.budget.plan_limits);
+        // Legacy alias: plan_limits = false meant dollar bars only.
+        assert_eq!(c.budget.mode, BillingMode::Usage);
     }
 
     #[test]
@@ -852,7 +893,34 @@ mod tests {
              weekly_reset_utc_offset = \"-15:00\"\n",
         );
         assert_eq!(c.budget.weekly_anchor, WeeklyAnchor::default());
-        assert!(c.budget.plan_limits);
+        assert_eq!(c.budget.mode, BillingMode::Auto);
+    }
+
+    #[test]
+    fn billing_mode_parses_each_value_case_insensitively() {
+        for (raw, want) in [
+            ("auto", BillingMode::Auto),
+            ("Subscription", BillingMode::Subscription),
+            (" USAGE ", BillingMode::Usage),
+        ] {
+            let (c, w) = from_toml_str(&format!("[budget]\nmode = \"{raw}\"\n"));
+            assert_eq!(w.len(), 0, "{raw}");
+            assert_eq!(c.budget.mode, want, "{raw}");
+        }
+    }
+
+    #[test]
+    fn billing_mode_unknown_value_falls_back_to_auto() {
+        let (c, _) = from_toml_str("[budget]\nmode = \"enterprise\"\n");
+        assert_eq!(c.budget.mode, BillingMode::Auto);
+    }
+
+    #[test]
+    fn billing_mode_wins_over_legacy_plan_limits() {
+        let (c, _) = from_toml_str("[budget]\nmode = \"subscription\"\nplan_limits = false\n");
+        assert_eq!(c.budget.mode, BillingMode::Subscription);
+        let (c, _) = from_toml_str("[budget]\nplan_limits = true\n");
+        assert_eq!(c.budget.mode, BillingMode::Auto);
     }
 
     #[test]

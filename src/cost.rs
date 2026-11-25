@@ -16,7 +16,7 @@
 use crate::context_bar;
 use crate::layout::{BLINK_RED, DIM, GREEN, ORANGE, RESET, YELLOW};
 use crate::{
-    config::{BudgetConfig, CostConfig, DisplayConfig, WeeklyAnchor},
+    config::{BillingMode, BudgetConfig, CostConfig, DisplayConfig, WeeklyAnchor},
     cost_cache,
     payload::PlanUsage,
 };
@@ -763,13 +763,36 @@ fn pct_of_budget(spent: f64, limit: f64) -> u8 {
     (spent / limit * 100.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// The plan's real usage for a window, when the user hasn't opted out.
+/// The plan's real usage for a window. Pay-for-usage mode ignores it; the
+/// other two modes use it wherever Claude Code reported it.
 const fn plan_pct(cfg: &BudgetConfig, reported: Option<u8>) -> Option<u8> {
-    if cfg.plan_limits {
-        reported
-    } else {
-        None
+    match cfg.mode {
+        BillingMode::Usage => None,
+        BillingMode::Auto | BillingMode::Subscription => reported,
     }
+}
+
+/// Subscription mode's budget line: the plan's own 5h and weekly percentages
+/// and nothing else. Session, daily and monthly are dollar figures ferrisbar
+/// computes itself, not plan quota, so they are not rendered here and no cost
+/// cache is read. Returns `None` when the payload carries neither window.
+fn subscription_line(
+    cfg: &BudgetConfig,
+    display: &DisplayConfig,
+    plan: PlanUsage,
+) -> Option<String> {
+    let mut segments = Vec::new();
+    if cfg.show_weekly {
+        if let Some(pct) = plan.seven_day {
+            segments.push(render_pct_window("wk", pct, cfg.bar_width, display));
+        }
+    }
+    if cfg.show_block5h {
+        if let Some(pct) = plan.five_hour {
+            segments.push(render_pct_window("5h", pct, cfg.bar_width, display));
+        }
+    }
+    (!segments.is_empty()).then(|| segments.join(&format!(" {DIM}│{RESET} ")))
 }
 
 /// The budget-windows line: one mini progress bar per enabled window
@@ -791,6 +814,9 @@ pub fn budget_line(
 ) -> Option<String> {
     if !cfg.enabled {
         return None;
+    }
+    if cfg.mode == BillingMode::Subscription {
+        return subscription_line(cfg, display, plan);
     }
     let mut segments = Vec::new();
 
@@ -1479,13 +1505,14 @@ mod tests {
         )
         .unwrap();
         assert!(line.contains("24%") && line.contains("81%"), "{line}");
-        // Opted out: nothing to show without a cache.
-        let off = BudgetConfig {
-            plan_limits: false,
+        // Pay-for-usage: plan percentages are ignored, and with no cache there
+        // is no dollar figure to show either.
+        let usage = BudgetConfig {
+            mode: BillingMode::Usage,
             ..cfg
         };
         assert!(budget_line(
-            &off,
+            &usage,
             &CostConfig::default(),
             &DisplayConfig::default(),
             None,
@@ -1493,6 +1520,113 @@ mod tests {
             plan,
         )
         .is_none());
+    }
+
+    #[test]
+    fn subscription_mode_shows_only_plan_windows_even_with_spend_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 3.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            mode: BillingMode::Subscription,
+            ..BudgetConfig::default()
+        };
+        let plan = PlanUsage {
+            five_hour: Some(15),
+            seven_day: Some(2),
+        };
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            Some(5.0),
+            plan,
+        )
+        .unwrap();
+        assert!(line.contains("wk") && line.contains("2%"), "{line}");
+        assert!(line.contains("5h") && line.contains("15%"), "{line}");
+        assert!(!line.contains("sess"), "{line}");
+        assert!(!line.contains("day"), "{line}");
+        assert!(!line.contains("mo"), "{line}");
+    }
+
+    #[test]
+    fn subscription_mode_never_falls_back_to_dollars() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 88.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            mode: BillingMode::Subscription,
+            block5h_usd: 43.0,
+            ..BudgetConfig::default()
+        };
+        // Payload without rate_limits: the 5h spend (88 of a 43 guess) must
+        // not become a 205% bar.
+        assert!(budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            None,
+            PlanUsage::default(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn usage_mode_ignores_plan_percentages() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 3.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            mode: BillingMode::Usage,
+            show_session: false,
+            show_daily: false,
+            show_monthly: false,
+            show_block5h: false,
+            ..BudgetConfig::default()
+        };
+        let plan = PlanUsage {
+            five_hour: Some(24),
+            seven_day: Some(81),
+        };
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            None,
+            plan,
+        )
+        .unwrap();
+        // Only the dollar weekly bar: 20 of 100 = 20%.
+        assert!(line.contains("20%"), "{line}");
+        assert!(!line.contains("81%"), "{line}");
     }
 
     #[test]

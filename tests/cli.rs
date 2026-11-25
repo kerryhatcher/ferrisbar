@@ -1110,3 +1110,31 @@ fn budget_line_uses_the_plans_real_percentages_from_the_payload() {
     assert!(out.contains("wk") && out.contains("81%"), "{out}");
     assert!(out.contains("5h") && out.contains("24%"), "{out}");
 }
+
+#[test]
+fn subscription_mode_hides_session_daily_and_monthly_bars() {
+    let (mut cmd, home) = isolated();
+    let dir = config_dir(home.path());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.toml"),
+        "[budget]\nenabled = true\nmode = \"subscription\"\n",
+    )
+    .unwrap();
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            br#"{"model":{"display_name":"Opus"},"cost":{"total_cost_usd":5.0},"rate_limits":{"five_hour":{"used_percentage":15},"seven_day":{"used_percentage":2}}}"#,
+        )
+        .unwrap();
+    let out = String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).into_owned();
+    assert!(out.contains("wk") && out.contains("2%"), "{out}");
+    assert!(out.contains("5h") && out.contains("15%"), "{out}");
+    assert!(!out.contains("sess"), "{out}");
+    assert!(!out.contains("day"), "{out}");
+    assert!(!out.contains("mo"), "{out}");
+}
