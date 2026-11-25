@@ -1085,3 +1085,59 @@ fn concurrent_renders_never_produce_a_corrupt_archive() {
         "no lock may be left behind"
     );
 }
+
+#[test]
+fn budget_line_uses_the_plans_real_percentages_from_the_payload() {
+    let (mut cmd, home) = isolated();
+    let dir = config_dir(home.path());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.toml"),
+        "[budget]\nenabled = true\nshow_session = false\n",
+    )
+    .unwrap();
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            br#"{"model":{"display_name":"Sonnet"},"rate_limits":{"five_hour":{"used_percentage":24},"seven_day":{"used_percentage":81}}}"#,
+        )
+        .unwrap();
+    let out = String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).into_owned();
+    assert!(out.contains("wk") && out.contains("81%"), "{out}");
+    assert!(out.contains("5h") && out.contains("24%"), "{out}");
+}
+
+#[test]
+fn subscription_mode_hides_session_daily_and_monthly_bars() {
+    let (mut cmd, home) = isolated();
+    let dir = config_dir(home.path());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.toml"),
+        "[budget]\nenabled = true\nmode = \"subscription\"\n",
+    )
+    .unwrap();
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            br#"{"model":{"display_name":"Opus"},"cost":{"total_cost_usd":5.0},"rate_limits":{"five_hour":{"used_percentage":15},"seven_day":{"used_percentage":2}}}"#,
+        )
+        .unwrap();
+    let out = String::from_utf8_lossy(&child.wait_with_output().unwrap().stdout).into_owned();
+    // Check only the budget line. The first line carries the cwd's directory
+    // name, which can contain any of these substrings.
+    let budget = out.lines().find(|l| l.contains("5h")).unwrap_or_default();
+    assert!(budget.contains("wk") && budget.contains("2%"), "{out}");
+    assert!(budget.contains("5h") && budget.contains("15%"), "{out}");
+    assert!(!budget.contains("sess"), "{out}");
+    assert!(!budget.contains("day"), "{out}");
+    assert!(!budget.contains("mo"), "{out}");
+}

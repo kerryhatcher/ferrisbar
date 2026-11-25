@@ -285,6 +285,10 @@ weekly_usd   = 100.0
 workdays     = 5
 session_usd  = 5.0
 block5h_usd  = 15.0
+mode         = "auto"
+weekly_reset_day        = "mon"
+weekly_reset_time       = "00:00"
+weekly_reset_utc_offset = "+00:00"
 bar_width    = 6
 show_session = true
 show_daily   = true
@@ -335,6 +339,54 @@ window has its own `show_*` toggle; the daily/weekly/monthly/block5h bars
 share the daily-cost cache above, so they're subject to the same `ttl_seconds`
 and appear only once that cache has a same-day value to show. `bar_width` sets
 the width of each mini bar, independent of `display.bar_width`.
+
+#### Plan limits and calibrating budgets
+
+Claude Pro/Max limits are percentages of an undisclosed allowance, not dollar
+caps. When Claude Code passes `rate_limits` (subscribers only, after the
+session's first API response), ferrisbar draws the `5h` and `wk` bars from
+those real percentages, so they match `/usage` with nothing to calibrate.
+`mode` picks how the budget line behaves:
+
+- `mode = "auto"` (the default) uses plan percentages where Claude Code
+  reports them and dollar bars otherwise. API-key users and anyone without
+  that data get the dollar bars.
+- `mode = "subscription"` is for Pro/Max. It shows only the plan's `5h` and
+  `wk` percentages and hides the dollar windows (`sess`, `day`, `mo`), since
+  those figures are estimates rather than plan quota.
+- `mode = "usage"` is for pay-for-usage (Enterprise/API) billing. It shows
+  only the dollar bars and ignores any plan percentages in the payload.
+
+The older `plan_limits` boolean still works when `mode` is absent: `false`
+means `usage` and `true` means `auto`. An explicit `mode` always wins.
+
+Claude Code reports no per-model meters (such as the separate Fable one), so
+ferrisbar has none either.
+
+The dollar bars are only a proxy, so calibrate them against `/usage`: divide
+what ferrisbar shows you've spent in the current window by the percentage
+`/usage` reports. If `$40.50` is `81%`, the limit is about `$50`, so set
+`weekly_usd = 50`. Do the same for `block5h_usd`.
+
+The dollar weekly window starts at `weekly_reset_day` / `weekly_reset_time` in
+`weekly_reset_utc_offset`; the default is Monday 00:00 UTC. To match a plan
+that resets Thursday 4am US Eastern (`/usage` shows e.g. "Resets Nov 19, 4am"):
+
+```toml
+weekly_reset_day        = "thu"
+weekly_reset_time       = "04:00"
+weekly_reset_utc_offset = "-05:00"   # "-04:00" while daylight saving applies
+```
+
+The offset is fixed, with no timezone database, so update it when DST flips.
+Only the weekly window moves: daily and monthly stay on the UTC calendar, and
+the dollar `5h` bar is always the trailing five hours, which only approximates
+a plan session that resets at a fixed time. The percentage bars have neither
+limitation. Because the cache refreshes every `ttl_seconds`, a bar can lag a
+reset by up to that long.
+
+If ferrisbar finds transcript usage for a model it has no price for, that
+usage counts as `$0` and a warning (`unpriced_model`) is written to the log.
 
 `[analytics]` is **off by default** and, unlike every other config block,
 has no effect at all unless ferrisbar was built with the optional
@@ -426,6 +478,7 @@ contract and the reasoning behind it.
 | `context_window.remaining_percentage` | number | The gauge. Omit it and the gauge is omitted. |
 | `context_window.total_tokens` | number | Turning `CLAUDE_CODE_AUTO_COMPACT_WINDOW` into a percentage. |
 | `cost.total_cost_usd` | number | The session-cost chip next to the gauge. |
+| `rate_limits.five_hour.used_percentage`, `rate_limits.seven_day.used_percentage` | number | The `5h` and `wk` budget bars, in place of dollar bars (see `plan_limits`). |
 
 Every field is optional, and every field is parsed leniently by
 [serde](https://serde.rs): a value of the wrong type is treated as absent

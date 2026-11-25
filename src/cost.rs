@@ -16,8 +16,9 @@
 use crate::context_bar;
 use crate::layout::{BLINK_RED, DIM, GREEN, ORANGE, RESET, YELLOW};
 use crate::{
-    config::{BudgetConfig, CostConfig, DisplayConfig},
+    config::{BillingMode, BudgetConfig, CostConfig, DisplayConfig, WeeklyAnchor},
     cost_cache,
+    payload::PlanUsage,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -387,13 +388,24 @@ fn parse_iso8601_utc(s: &str) -> Option<i64> {
     Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
-/// Start of the Monday-anchored ISO week containing `now`. Epoch day 0
-/// (1970-01-01) was a Thursday, so `(day + 3).rem_euclid(7)` gives days
-/// since the preceding Monday (Monday = 0 ... Sunday = 6).
-const fn start_of_week(now: i64) -> i64 {
-    let day = now.div_euclid(86_400);
-    let since_monday = (day + 3).rem_euclid(7);
-    (day - since_monday) * 86_400
+/// Start of the weekly window containing `now`: the most recent occurrence
+/// of `anchor`'s weekday and time of day (in its fixed UTC offset) that is
+/// not after `now`. The default anchor is Monday 00:00 UTC, i.e. the ISO
+/// calendar week. Epoch day 0 (1970-01-01) was a Thursday, so
+/// `(day + 3).rem_euclid(7)` is the weekday with Monday = 0.
+fn start_of_week(now: i64, anchor: WeeklyAnchor) -> i64 {
+    let local = now + anchor.utc_offset_secs;
+    let day = local.div_euclid(86_400);
+    let weekday = (day + 3).rem_euclid(7);
+    let since_anchor_day = (weekday - i64::from(anchor.weekday)).rem_euclid(7);
+    let start = (day - since_anchor_day) * 86_400 + anchor.secs_into_day - anchor.utc_offset_secs;
+    // Same weekday as the anchor but earlier than its reset time today:
+    // the current window began a week ago.
+    if start > now {
+        start - 7 * 86_400
+    } else {
+        start
+    }
 }
 
 /// Start of the calendar month containing `now`, in UTC.
@@ -434,6 +446,9 @@ pub struct WindowTotals {
     pub weekly_usd: f64,
     pub monthly_usd: f64,
     pub block5h_usd: f64,
+    /// Sorted, distinct model ids that had usage but no pricing entry —
+    /// their cost counted as $0, so every total is an undercount.
+    pub unpriced_models: Vec<String>,
 }
 
 /// One pass over every transcript line, bucketing each usage-bearing
@@ -446,9 +461,11 @@ fn aggregate_windows(
     now: i64,
     today: &str,
     analytics: &mut crate::analytics::Sink,
+    anchor: WeeklyAnchor,
 ) -> WindowTotals {
     let pricing = load_pricing();
-    let week_start = start_of_week(now);
+    let week_start = start_of_week(now, anchor);
+    let mut unpriced: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let month_start = start_of_month(now);
     let block_start = start_of_block5h(now);
 
@@ -512,6 +529,9 @@ fn aggregate_windows(
             // cost-bearing records, so that behavior is unchanged.
             analytics.record(&rec, cost);
             if cost <= 0.0 {
+                if resolve_model(&rec.model, &pricing).is_none() {
+                    unpriced.insert(rec.model.clone());
+                }
                 continue;
             }
             if rec.date == today {
@@ -544,6 +564,7 @@ fn aggregate_windows(
         weekly_usd: weekly_total,
         monthly_usd: monthly_total,
         block5h_usd: block5h_total,
+        unpriced_models: unpriced.into_iter().collect(),
     }
 }
 
@@ -588,12 +609,20 @@ fn format_daily_chip(daily: &DailyTotal, min_usd: f64) -> String {
 /// construction — a write failure is swallowed by `cost_cache::write_cache`,
 /// and the lock is always released so a stuck refresh cannot wedge every
 /// later render out of ever retrying.
-pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path, analytics_enabled: bool) {
+///
+/// Returns the model ids that had usage but no pricing entry, so the caller
+/// (which owns the logger) can warn instead of silently undercounting.
+pub fn refresh_daily_cache(
+    transcripts_root: &Path,
+    data_dir: &Path,
+    analytics_enabled: bool,
+    anchor: WeeklyAnchor,
+) -> Vec<String> {
     let now = now_unix_secs();
     let today = today_utc_date(now);
     let yesterday = today_utc_date(now - 86_400);
     let mut analytics = crate::analytics::Sink::new(analytics_enabled, today.clone(), yesterday);
-    let windows = aggregate_windows(transcripts_root, now, &today, &mut analytics);
+    let windows = aggregate_windows(transcripts_root, now, &today, &mut analytics, anchor);
     analytics.flush(data_dir);
     let payload = cost_cache::CachePayload {
         date: today,
@@ -605,6 +634,7 @@ pub fn refresh_daily_cache(transcripts_root: &Path, data_dir: &Path, analytics_e
     };
     let _ = cost_cache::write_cache(data_dir, &payload);
     cost_cache::release_lock(data_dir);
+    windows.unpriced_models
 }
 
 /// Reads the on-disk cache, honoring `ttl_seconds` for staleness (which
@@ -703,7 +733,12 @@ fn render_budget_window(
     width: u8,
     display: &DisplayConfig,
 ) -> String {
-    let pct = pct_of_budget(spent, limit);
+    render_pct_window(label, pct_of_budget(spent, limit), width, display)
+}
+
+/// The bar-and-percentage half of `render_budget_window`, for callers that
+/// already have a percentage (the plan's real usage) rather than dollars.
+fn render_pct_window(label: &str, pct: u8, width: u8, display: &DisplayConfig) -> String {
     let bar = context_bar::render_bar(pct.min(100), width as usize);
     let colored = if pct < display.threshold_yellow {
         format!("{GREEN}{bar} {pct}%{RESET}")
@@ -728,6 +763,38 @@ fn pct_of_budget(spent: f64, limit: f64) -> u8 {
     (spent / limit * 100.0).round().clamp(0.0, 255.0) as u8
 }
 
+/// The plan's real usage for a window. Pay-for-usage mode ignores it; the
+/// other two modes use it wherever Claude Code reported it.
+const fn plan_pct(cfg: &BudgetConfig, reported: Option<u8>) -> Option<u8> {
+    match cfg.mode {
+        BillingMode::Usage => None,
+        BillingMode::Auto | BillingMode::Subscription => reported,
+    }
+}
+
+/// Subscription mode's budget line: the plan's own 5h and weekly percentages
+/// and nothing else. Session, daily and monthly are dollar figures ferrisbar
+/// computes itself, not plan quota, so they are not rendered here and no cost
+/// cache is read. Returns `None` when the payload carries neither window.
+fn subscription_line(
+    cfg: &BudgetConfig,
+    display: &DisplayConfig,
+    plan: PlanUsage,
+) -> Option<String> {
+    let mut segments = Vec::new();
+    if cfg.show_weekly {
+        if let Some(pct) = plan.seven_day {
+            segments.push(render_pct_window("wk", pct, cfg.bar_width, display));
+        }
+    }
+    if cfg.show_block5h {
+        if let Some(pct) = plan.five_hour {
+            segments.push(render_pct_window("5h", pct, cfg.bar_width, display));
+        }
+    }
+    (!segments.is_empty()).then(|| segments.join(&format!(" {DIM}│{RESET} ")))
+}
+
 /// The budget-windows line: one mini progress bar per enabled window
 /// (session, daily, weekly, monthly, the rolling 5-hour block), or `None`
 /// when the feature is off or no window has anything to show yet. Session
@@ -743,9 +810,13 @@ pub fn budget_line(
     display: &DisplayConfig,
     data_dir: Option<&Path>,
     session_cost_usd: Option<f64>,
+    plan: PlanUsage,
 ) -> Option<String> {
     if !cfg.enabled {
         return None;
+    }
+    if cfg.mode == BillingMode::Subscription {
+        return subscription_line(cfg, display, plan);
     }
     let mut segments = Vec::new();
 
@@ -776,12 +847,17 @@ pub fn budget_line(
             ));
         }
         if cfg.show_weekly {
-            segments.push(render_budget_window(
-                "wk",
-                payload.weekly_usd,
-                cfg.weekly_usd,
-                cfg.bar_width,
-                display,
+            segments.push(plan_pct(cfg, plan.seven_day).map_or_else(
+                || {
+                    render_budget_window(
+                        "wk",
+                        payload.weekly_usd,
+                        cfg.weekly_usd,
+                        cfg.bar_width,
+                        display,
+                    )
+                },
+                |pct| render_pct_window("wk", pct, cfg.bar_width, display),
             ));
         }
         if cfg.show_monthly {
@@ -794,13 +870,30 @@ pub fn budget_line(
             ));
         }
         if cfg.show_block5h {
-            segments.push(render_budget_window(
-                "5h",
-                payload.block5h_usd,
-                cfg.block5h_usd,
-                cfg.bar_width,
-                display,
+            segments.push(plan_pct(cfg, plan.five_hour).map_or_else(
+                || {
+                    render_budget_window(
+                        "5h",
+                        payload.block5h_usd,
+                        cfg.block5h_usd,
+                        cfg.bar_width,
+                        display,
+                    )
+                },
+                |pct| render_pct_window("5h", pct, cfg.bar_width, display),
             ));
+        }
+    } else if needs_cache {
+        // No cost cache yet, but the plan's own percentages need none.
+        if cfg.show_weekly {
+            if let Some(pct) = plan_pct(cfg, plan.seven_day) {
+                segments.push(render_pct_window("wk", pct, cfg.bar_width, display));
+            }
+        }
+        if cfg.show_block5h {
+            if let Some(pct) = plan_pct(cfg, plan.five_hour) {
+                segments.push(render_pct_window("5h", pct, cfg.bar_width, display));
+            }
         }
     }
 
@@ -1091,7 +1184,13 @@ mod tests {
         );
 
         let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
+        let windows = aggregate_windows(
+            dir.path(),
+            now,
+            "2026-08-10",
+            &mut analytics,
+            WeeklyAnchor::default(),
+        );
 
         // sonnet-5 input rate is $2/Mtok, so one deduped 1M-token message = $2.
         // opus-4-8 input rate is $5/Mtok, so one 1M-token message = $5.
@@ -1126,7 +1225,13 @@ mod tests {
 
         let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
         let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
+        let windows = aggregate_windows(
+            dir.path(),
+            now,
+            "2026-08-10",
+            &mut analytics,
+            WeeklyAnchor::default(),
+        );
         assert!(
             (windows.daily.total_usd - 2.0).abs() < 1e-9,
             "the valid line after the malformed one must still be counted"
@@ -1157,6 +1262,7 @@ mod tests {
             now,
             "2026-08-10",
             &mut analytics,
+            WeeklyAnchor::default(),
         );
         assert_eq!(windows.daily.total_usd, 0.0);
         assert_eq!(windows.daily.by_model.len(), 0);
@@ -1188,7 +1294,13 @@ mod tests {
         );
 
         let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
+        let windows = aggregate_windows(
+            dir.path(),
+            now,
+            "2026-08-10",
+            &mut analytics,
+            WeeklyAnchor::default(),
+        );
         assert_eq!(windows.daily.total_usd, 0.0);
         assert_eq!(windows.weekly_usd, 0.0);
         assert_eq!(windows.monthly_usd, 0.0);
@@ -1224,7 +1336,13 @@ mod tests {
 
         let mut analytics =
             crate::analytics::Sink::new(true, "2026-08-10".to_string(), "2026-08-09".to_string());
-        let windows = aggregate_windows(dir.path(), now, "2026-08-10", &mut analytics);
+        let windows = aggregate_windows(
+            dir.path(),
+            now,
+            "2026-08-10",
+            &mut analytics,
+            WeeklyAnchor::default(),
+        );
         // An unrecognized model prices to $0, so it never joins the visible
         // cost-chip totals.
         assert_eq!(windows.daily.total_usd, 0.0);
@@ -1293,9 +1411,222 @@ mod tests {
         let monday = parse_iso8601_utc("2026-08-10T00:00:00Z").unwrap();
         let mid_week = parse_iso8601_utc("2026-08-13T15:00:00Z").unwrap();
         let next_monday = parse_iso8601_utc("2026-08-17T00:00:00Z").unwrap();
-        assert_eq!(start_of_week(mid_week), monday);
-        assert_eq!(start_of_week(monday), monday);
-        assert_eq!(start_of_week(next_monday), next_monday);
+        assert_eq!(start_of_week(mid_week, WeeklyAnchor::default()), monday);
+        assert_eq!(start_of_week(monday, WeeklyAnchor::default()), monday);
+        assert_eq!(
+            start_of_week(next_monday, WeeklyAnchor::default()),
+            next_monday
+        );
+    }
+
+    #[test]
+    fn start_of_week_follows_a_thursday_4am_eastern_anchor() {
+        // Thursday 04:00 at UTC-5 is Thursday 09:00 UTC.
+        let anchor = WeeklyAnchor {
+            weekday: 3,
+            secs_into_day: 4 * 3600,
+            utc_offset_secs: -5 * 3600,
+        };
+        // 2026-11-19 is a Thursday.
+        let reset = parse_iso8601_utc("2026-11-19T09:00:00Z").unwrap();
+        let after = parse_iso8601_utc("2026-11-19T09:00:01Z").unwrap();
+        let before = parse_iso8601_utc("2026-11-19T08:59:59Z").unwrap();
+        let prior = parse_iso8601_utc("2026-11-12T09:00:00Z").unwrap();
+        assert_eq!(start_of_week(reset, anchor), reset);
+        assert_eq!(start_of_week(after, anchor), reset);
+        // Same weekday but before the reset time: still last week's window.
+        assert_eq!(start_of_week(before, anchor), prior);
+        let monday = parse_iso8601_utc("2026-11-16T12:00:00Z").unwrap();
+        assert_eq!(start_of_week(monday, anchor), prior);
+    }
+
+    #[test]
+    fn start_of_week_offset_can_shift_the_local_weekday() {
+        // Monday 00:00 at UTC+10 is Sunday 14:00 UTC.
+        let anchor = WeeklyAnchor {
+            weekday: 0,
+            secs_into_day: 0,
+            utc_offset_secs: 10 * 3600,
+        };
+        let sunday_2pm = parse_iso8601_utc("2026-08-09T14:00:00Z").unwrap();
+        let now = parse_iso8601_utc("2026-08-12T00:00:00Z").unwrap();
+        assert_eq!(start_of_week(now, anchor), sunday_2pm);
+    }
+
+    #[test]
+    fn aggregate_windows_reports_unpriced_models_once_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = |model: &str| {
+            format!(
+                r#"{{"timestamp":"2026-08-10T11:00:00Z","cwd":"/r","message":{{"model":"{model}","usage":{{"input_tokens":1000,"output_tokens":10}}}}}}"#
+            )
+        };
+        write_transcript(
+            dir.path(),
+            "a.jsonl",
+            &[
+                &line("mystery-9"),
+                &line("mystery-9"),
+                &line("claude-sonnet-5"),
+            ],
+        );
+        let now = parse_iso8601_utc("2026-08-10T12:00:00Z").unwrap();
+        let mut analytics = crate::analytics::Sink::new(false, String::new(), String::new());
+        let windows = aggregate_windows(
+            dir.path(),
+            now,
+            "2026-08-10",
+            &mut analytics,
+            WeeklyAnchor::default(),
+        );
+        assert_eq!(windows.unpriced_models, vec!["mystery-9".to_string()]);
+    }
+
+    #[test]
+    fn budget_line_shows_plan_percentages_without_a_cost_cache() {
+        let cfg = BudgetConfig {
+            enabled: true,
+            show_session: false,
+            show_daily: false,
+            show_monthly: false,
+            ..BudgetConfig::default()
+        };
+        let plan = PlanUsage {
+            five_hour: Some(24),
+            seven_day: Some(81),
+        };
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            None,
+            None,
+            plan,
+        )
+        .unwrap();
+        assert!(line.contains("24%") && line.contains("81%"), "{line}");
+        // Pay-for-usage: plan percentages are ignored, and with no cache there
+        // is no dollar figure to show either.
+        let usage = BudgetConfig {
+            mode: BillingMode::Usage,
+            ..cfg
+        };
+        assert!(budget_line(
+            &usage,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            None,
+            None,
+            plan,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn subscription_mode_shows_only_plan_windows_even_with_spend_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 3.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            mode: BillingMode::Subscription,
+            ..BudgetConfig::default()
+        };
+        let plan = PlanUsage {
+            five_hour: Some(15),
+            seven_day: Some(2),
+        };
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            Some(5.0),
+            plan,
+        )
+        .unwrap();
+        assert!(line.contains("wk") && line.contains("2%"), "{line}");
+        assert!(line.contains("5h") && line.contains("15%"), "{line}");
+        assert!(!line.contains("sess"), "{line}");
+        assert!(!line.contains("day"), "{line}");
+        assert!(!line.contains("mo"), "{line}");
+    }
+
+    #[test]
+    fn subscription_mode_never_falls_back_to_dollars() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 88.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            mode: BillingMode::Subscription,
+            block5h_usd: 43.0,
+            ..BudgetConfig::default()
+        };
+        // Payload without rate_limits: the 5h spend (88 of a 43 guess) must
+        // not become a 205% bar.
+        assert!(budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            None,
+            PlanUsage::default(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn usage_mode_ignores_plan_percentages() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = cost_cache::CachePayload {
+            date: today_utc_date(now_unix_secs()),
+            total_usd: 4.0,
+            by_model: Vec::new(),
+            weekly_usd: 20.0,
+            monthly_usd: 80.0,
+            block5h_usd: 3.0,
+        };
+        cost_cache::write_cache(dir.path(), &payload).unwrap();
+        let cfg = BudgetConfig {
+            enabled: true,
+            mode: BillingMode::Usage,
+            show_session: false,
+            show_daily: false,
+            show_monthly: false,
+            show_block5h: false,
+            ..BudgetConfig::default()
+        };
+        let plan = PlanUsage {
+            five_hour: Some(24),
+            seven_day: Some(81),
+        };
+        let line = budget_line(
+            &cfg,
+            &CostConfig::default(),
+            &DisplayConfig::default(),
+            Some(dir.path()),
+            None,
+            plan,
+        )
+        .unwrap();
+        // Only the dollar weekly bar: 20 of 100 = 20%.
+        assert!(line.contains("20%"), "{line}");
+        assert!(!line.contains("81%"), "{line}");
     }
 
     #[test]
@@ -1601,7 +1932,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(dir.path().join("cost-cache.lock"), b"").unwrap();
 
-        refresh_daily_cache(&root, dir.path(), false);
+        refresh_daily_cache(&root, dir.path(), false, WeeklyAnchor::default());
 
         assert!(dir.path().join("cost-cache.json").exists());
         assert!(!dir.path().join("cost-cache.lock").exists());
@@ -1628,7 +1959,12 @@ mod tests {
         );
         let data_dir = tempfile::tempdir().unwrap();
 
-        refresh_daily_cache(transcripts.path(), data_dir.path(), true);
+        refresh_daily_cache(
+            transcripts.path(),
+            data_dir.path(),
+            true,
+            WeeklyAnchor::default(),
+        );
 
         assert!(
             crate::analytics::store::db_path(data_dir.path()).exists(),
@@ -1654,7 +1990,12 @@ mod tests {
         );
         let data_dir = tempfile::tempdir().unwrap();
 
-        refresh_daily_cache(transcripts.path(), data_dir.path(), false);
+        refresh_daily_cache(
+            transcripts.path(),
+            data_dir.path(),
+            false,
+            WeeklyAnchor::default(),
+        );
 
         assert!(!crate::analytics::store::db_path(data_dir.path()).exists());
     }
@@ -1687,7 +2028,8 @@ mod tests {
             &CostConfig::default(),
             &DisplayConfig::default(),
             Some(Path::new("/tmp")),
-            Some(1.0)
+            Some(1.0),
+            PlanUsage::default()
         )
         .is_none());
     }
@@ -1710,6 +2052,7 @@ mod tests {
             &DisplayConfig::default(),
             Some(dir.path()),
             Some(5.0),
+            PlanUsage::default(),
         )
         .unwrap();
         assert!(line.contains("sess"));
@@ -1733,7 +2076,8 @@ mod tests {
             &CostConfig::default(),
             &DisplayConfig::default(),
             Some(dir.path()),
-            None
+            None,
+            PlanUsage::default()
         )
         .is_none());
     }
@@ -1755,6 +2099,7 @@ mod tests {
             &DisplayConfig::default(),
             Some(dir.path()),
             Some(1.0),
+            PlanUsage::default(),
         );
         assert!(
             !dir.path().join("cost-cache.lock").exists(),
@@ -1789,6 +2134,7 @@ mod tests {
             &DisplayConfig::default(),
             Some(dir.path()),
             None,
+            PlanUsage::default(),
         )
         .unwrap();
         assert!(line.contains("day"));
@@ -1821,6 +2167,7 @@ mod tests {
             &DisplayConfig::default(),
             Some(dir.path()),
             Some(1.0),
+            PlanUsage::default(),
         )
         .unwrap();
         assert!(line.contains("day"));
