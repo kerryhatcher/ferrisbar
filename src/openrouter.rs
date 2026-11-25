@@ -1,5 +1,5 @@
-//! `ferrisbar openrouter`: print the `OpenRouter` key's spend and limit, and the
-//! account's credit totals when a management key is available.
+//! `ferrisbar openrouter`: print the `OpenRouter` key's budget and spend, and
+//! the account's lifetime credits and what remains of them.
 //!
 //! Runs only when invoked explicitly, never on the statusline render path, so
 //! the network call cannot slow a prompt. The HTTP request is made by `curl`,
@@ -30,6 +30,7 @@ pub fn run() -> i32 {
         }
     };
 
+    // The key's own budget is essential, so its failure is fatal.
     let key_info = match get(&format!("{API}/key"), &key) {
         Ok(json) => json,
         Err(msg) => {
@@ -39,20 +40,17 @@ pub fn run() -> i32 {
     };
     print!("{}", format_key(&key_info["data"]));
 
-    match env_key(MANAGEMENT_VAR) {
-        Ok(Some(management)) => match get(&format!("{API}/credits"), &management) {
-            Ok(json) => print!("{}", format_credits(&json["data"])),
-            Err(msg) => {
-                eprintln!("ferrisbar openrouter: {msg}");
-                return 1;
-            }
-        },
-        Ok(None) => {}
+    // Credits accept the normal key, so try that unless a management key is
+    // set. A refusal is reported in place, not treated as a failure.
+    let credits_key = match env_key(MANAGEMENT_VAR) {
+        Ok(Some(management)) => management,
+        Ok(None) => key,
         Err(msg) => {
             eprintln!("ferrisbar openrouter: {msg}");
             return 1;
         }
-    }
+    };
+    print!("\n{}", credits_section(&credits_key));
     0
 }
 
@@ -117,26 +115,61 @@ fn usd_field(data: &Value, key: &str) -> String {
     data[key].as_f64().map_or_else(|| "?".to_string(), usd)
 }
 
-/// The key's own limit and spend. Missing fields print as `?` rather than
+/// The budget that blocks requests first, normalised across the two shapes
+/// `OpenRouter` uses: `effective_budget` (`limit_usd`, `remaining_usd`,
+/// `reset_interval`) and the key's own top-level fields (`limit`,
+/// `limit_remaining`, `limit_reset`).
+struct Budget {
+    limit: Option<f64>,
+    remaining: Option<f64>,
+    reset: Option<String>,
+    scope: Option<String>,
+}
+
+fn budget(data: &Value) -> Budget {
+    let effective = &data["effective_budget"];
+    if effective.is_object() {
+        Budget {
+            limit: effective["limit_usd"].as_f64(),
+            remaining: effective["remaining_usd"].as_f64(),
+            reset: effective["reset_interval"].as_str().map(str::to_string),
+            scope: effective["scope"].as_str().map(|s| s.replace('_', " ")),
+        }
+    } else {
+        Budget {
+            limit: data["limit"].as_f64(),
+            remaining: data["limit_remaining"].as_f64(),
+            reset: data["limit_reset"].as_str().map(str::to_string),
+            scope: None,
+        }
+    }
+}
+
+fn budget_line(data: &Value) -> String {
+    let b = budget(data);
+    let Some(limit) = b.limit else {
+        return "none set on this key".to_string();
+    };
+    let mut line = usd(limit);
+    if let Some(reset) = &b.reset {
+        let _ = write!(line, " {reset}");
+    }
+    let remaining = b.remaining.map_or_else(|| "?".to_string(), usd);
+    let _ = write!(line, " · {remaining} remaining");
+    if let Some(scope) = &b.scope {
+        let _ = write!(line, " ({scope})");
+    }
+    line
+}
+
+/// The key's own budget and spend. Missing fields print as `?` rather than
 /// failing, so a shape change degrades the output instead of breaking it.
 fn format_key(data: &Value) -> String {
     let mut out = String::new();
     // The key's label is deliberately not printed: OpenRouter labels are
     // masked key fragments, and terminal output gets pasted and shared.
     let _ = writeln!(out, "OpenRouter API key");
-
-    if let Some(limit) = data["limit"].as_f64() {
-        let remaining = usd_field(data, "limit_remaining");
-        let reset = data["limit_reset"].as_str().unwrap_or("no reset");
-        let _ = writeln!(
-            out,
-            "  Limit:     {} ({remaining} remaining, {reset})",
-            usd(limit)
-        );
-    } else {
-        let _ = writeln!(out, "  Limit:     none set on this key");
-    }
-
+    let _ = writeln!(out, "  Budget:    {}", budget_line(data));
     let _ = writeln!(
         out,
         "  Usage:     today {} · this week {} · this month {} · all time {}",
@@ -145,6 +178,22 @@ fn format_key(data: &Value) -> String {
         usd_field(data, "usage_monthly"),
         usd_field(data, "usage"),
     );
+    // Free-model requests are a per-day quota separate from the spend budget.
+    let free = &data["free_model_daily_requests"];
+    if free.is_object() {
+        let count = |key: &str| {
+            free[key]
+                .as_u64()
+                .map_or_else(|| "?".to_string(), |n| n.to_string())
+        };
+        let _ = writeln!(
+            out,
+            "  Free models: {} of {} requests today ({} left)",
+            count("used"),
+            count("limit"),
+            count("remaining"),
+        );
+    }
     if data["is_free_tier"].as_bool() == Some(true) {
         let _ = writeln!(out, "  Tier:      free");
     }
@@ -154,20 +203,39 @@ fn format_key(data: &Value) -> String {
     out
 }
 
-/// Account-wide totals. Needs a management key; a normal key is refused by
-/// `OpenRouter` with a 403, which surfaces as an error before this runs.
+/// Fetches the account credits and renders them, or a one-line note when the
+/// key is not allowed to read them.
+fn credits_section(key: &str) -> String {
+    match get(&format!("{API}/credits"), key) {
+        Ok(json) => format_credits(&json["data"]),
+        Err(msg) => format!("Account credits: unavailable ({msg})\n"),
+    }
+}
+
+/// Lifetime credit totals for the account. `total_credits` is everything ever
+/// purchased and `total_usage` everything ever spent, both in USD, so the
+/// remaining balance is their difference.
 fn format_credits(data: &Value) -> String {
-    let total = data["total_credits"].as_f64();
+    let purchased = data["total_credits"].as_f64();
     let used = data["total_usage"].as_f64();
-    let remaining = match (total, used) {
-        (Some(t), Some(u)) => usd(t - u),
+    let remaining = match (purchased, used) {
+        (Some(p), Some(u)) => usd(p - u),
         _ => "?".to_string(),
     };
-    format!(
-        "Account credits: {} purchased, {} used, {remaining} remaining\n",
-        total.map_or_else(|| "?".to_string(), usd),
-        used.map_or_else(|| "?".to_string(), usd),
-    )
+    let mut out = String::new();
+    let _ = writeln!(out, "Account credits (lifetime)");
+    let _ = writeln!(out, "  Remaining: {remaining}");
+    let _ = writeln!(
+        out,
+        "  Purchased: {}",
+        purchased.map_or_else(|| "?".to_string(), usd)
+    );
+    let _ = writeln!(
+        out,
+        "  Used:      {}",
+        used.map_or_else(|| "?".to_string(), usd)
+    );
+    out
 }
 
 #[cfg(test)]
@@ -178,17 +246,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn key_with_a_limit_shows_limit_remaining_and_usage() {
+    fn key_budget_comes_from_effective_budget_when_present() {
         let data = json!({
             "label": "ferrisbar",
             "limit": 50.0,
             "limit_remaining": 12.5,
             "limit_reset": "monthly",
+            "effective_budget": {
+                "scope": "key_limit",
+                "limit_usd": 5.0,
+                "remaining_usd": 4.0,
+                "reset_interval": "daily",
+            },
             "usage": 37.5,
             "usage_daily": 1.25,
             "usage_weekly": 9.0,
             "usage_monthly": 30.0,
             "is_free_tier": false,
+            "free_model_daily_requests": {"used": 125, "limit": 1000, "remaining": 875},
         });
         let text = format_key(&data);
         assert!(text.starts_with("OpenRouter API key\n"), "{text}");
@@ -196,18 +271,36 @@ mod tests {
             !text.contains("ferrisbar"),
             "label must not be printed: {text}"
         );
+        // The effective budget wins over the top-level limit.
         assert!(
-            text.contains("$50.00 ($12.50 remaining, monthly)"),
+            text.contains("$5.00 daily · $4.00 remaining (key limit)"),
             "{text}"
         );
+        assert!(!text.contains("$50.00"), "{text}");
         assert!(text.contains("today $1.25"), "{text}");
         assert!(text.contains("all time $37.50"), "{text}");
         assert!(!text.contains("Tier:"), "{text}");
+        assert!(
+            text.contains("Free models: 125 of 1000 requests today (875 left)"),
+            "{text}"
+        );
     }
 
     #[test]
-    fn key_without_a_limit_says_so() {
-        let text = format_key(&json!({"label": "x", "limit": null, "usage": 2.0}));
+    fn key_budget_falls_back_to_top_level_limit() {
+        let data = json!({
+            "limit": 50.0,
+            "limit_remaining": 12.5,
+            "limit_reset": "monthly",
+            "effective_budget": null,
+        });
+        let text = format_key(&data);
+        assert!(text.contains("$50.00 monthly · $12.50 remaining"), "{text}");
+    }
+
+    #[test]
+    fn key_without_a_budget_says_so() {
+        let text = format_key(&json!({"limit": null, "effective_budget": null, "usage": 2.0}));
         assert!(text.contains("none set on this key"), "{text}");
     }
 
@@ -219,12 +312,18 @@ mod tests {
     }
 
     #[test]
-    fn credits_show_purchased_used_and_remaining() {
-        let text = format_credits(&json!({"total_credits": 100.5, "total_usage": 25.75}));
+    fn credits_show_remaining_purchased_and_used() {
+        let text = format_credits(&json!({"total_credits": 400.0, "total_usage": 371.73}));
         assert_eq!(
             text,
-            "Account credits: $100.50 purchased, $25.75 used, $74.75 remaining\n"
+            "Account credits (lifetime)\n  Remaining: $28.27\n  Purchased: $400.00\n  Used:      $371.73\n"
         );
+    }
+
+    #[test]
+    fn credits_with_missing_totals_print_question_marks() {
+        let text = format_credits(&Value::Null);
+        assert!(text.contains("Remaining: ?"), "{text}");
     }
 
     #[test]
